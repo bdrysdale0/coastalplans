@@ -9526,6 +9526,2251 @@
             };
         })();
 
+// =========================================================================
+        // 29. DROP-IN MODULE: INTERIOR PLASTER SHELL, CEILINGS, SCULPTED SKIRTINGS,
+        //     3D FEATURE WALLS & DYNAMIC CEILING HEIGHTS (2.40m / 2.55m / 2.80m)
+        // Paste Sections 1 + 2 + 3 immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initInteriorPlasterAndHeightPlugin() {
+            const BASE_GF_CEIL_H = 2.45; // Original v4 datum (Y_GF_CEIL - Y_GF_FFL = 2.45m)
+
+            // Central state shared across Sections 1, 2 & 3 of this plugin
+            const InteriorFinishState = {
+                ceilingHeight: 2.40,         // 2.40 (STD) | 2.55 (UPG) | 2.80 (UPG)
+                highHeadOpenings: false,     // Optional 2.38m high door/window heads when ceiling >= 2.55m
+                ceilingPaint: 'Ceiling White',
+                corniceStyle: 'squareset',   // 'squareset' (STD) | 'cove90' | 'shadowline' (UPG)
+                skirtingFinish: 'paint',     // 'paint' (follows Trim Paint) | 'oak' (Natural Coastal Oak)
+                featureStyle: 'vj',          // 'vj' (3D V-Groove Panelling) | 'battens' (Oak Acoustic Battens)
+                featureColor: 'Coastal Sage',// Applied to VJ panelling (battens use Oak over dark felt)
+                featureZones: {
+                    bed1: false,             // Follows Bed 1 Partition vs Under W02 layout automatically
+                    diningBooth: false,      // 860mm wainscoting wrap around NW/NE dining booth corner
+                    livingTv: false,         // SE Living room TV wall (X: 17.08..21.26)
+                    entryHall: false         // Entry hallway wall backing onto garage (Z_SPLIT)
+                }
+            };
+
+            const CEILING_PAINT_SWATCHES = [
+                { name: 'Ceiling White',   hex: '#fbfbf9' },
+                { name: 'Vivid White',     hex: '#ffffff' },
+                { name: 'Natural White',   hex: '#f5f3ec' },
+                { name: 'Lexicon Qtr',     hex: '#f1f3f5' },
+                { name: 'Whisper White',   hex: '#f2eee4' }
+            ];
+
+            const FEATURE_WALL_SWATCHES = [
+                { name: 'Whisper White',  hex: '#f2eee4' },
+                { name: 'Coastal Sage',   hex: '#899988' },
+                { name: 'Soft Sand',      hex: '#d9cfc1' },
+                { name: 'Coastal Mist',   hex: '#b9c6cc' },
+                { name: 'Deep Ocean',     hex: '#3b586a' },
+                { name: 'Warm Charcoal',  hex: '#464a4f' }
+            ];
+
+            // Dedicated materials for plaster linings, ceilings, sculpted trims & 3D feature walls
+            const intFinishMats = {
+                ceiling: new THREE.MeshStandardMaterial({
+                    color: 0xfbfbf9, roughness: 0.94, metalness: 0.0, side: THREE.DoubleSide
+                }),
+                shadowGap: new THREE.MeshStandardMaterial({
+                    color: 0x1e242b, roughness: 0.95, metalness: 0.0
+                }),
+                skirtingOak: new THREE.MeshStandardMaterial({
+                    color: 0xc9a679, roughness: 0.48, metalness: 0.02
+                }),
+                vjBoard: new THREE.MeshStandardMaterial({
+                    color: 0x899988, roughness: 0.72, metalness: 0.02
+                }),
+                vjGroove: new THREE.MeshStandardMaterial({
+                    color: 0x566457, roughness: 0.90, metalness: 0.0
+                }),
+                battenFelt: new THREE.MeshStandardMaterial({
+                    color: 0x26292e, roughness: 0.96, metalness: 0.0
+                }),
+                battenOak: new THREE.MeshStandardMaterial({
+                    color: 0xc69d6d, roughness: 0.56, metalness: 0.02
+                }),
+                cornice: new THREE.MeshStandardMaterial({
+                    color: 0xfbfbf9, roughness: 0.88, metalness: 0.0
+                })
+            };
+
+            // Give existing interiorTrim a true semi-gloss aqua enamel sheen so sculpted profiles catch light
+            materials.interiorTrim.roughness = 0.30;
+            materials.interiorTrim.metalness = 0.04;
+
+            // Dedicated Layer Groups (clean separation for Roof Off / Lower Floor cutaway modes)
+            const heightExtGroup = new THREE.Group();
+            heightExtGroup.name = 'ceiling-height-extensions';
+            const interiorPlasterGFGroup = new THREE.Group();
+            interiorPlasterGFGroup.name = 'interior-plaster-gf';
+            const interiorPlasterLGFGroup = new THREE.Group();
+            interiorPlasterLGFGroup.name = 'interior-plaster-lgf';
+            const ceilingGFGroup = new THREE.Group();
+            ceilingGFGroup.name = 'ceiling-gf';
+            const ceilingLGFGroup = new THREE.Group();
+            ceilingLGFGroup.name = 'ceiling-lgf';
+            const corniceGFGroup = new THREE.Group();
+            corniceGFGroup.name = 'cornice-gf';
+            const corniceLGFGroup = new THREE.Group();
+            corniceLGFGroup.name = 'cornice-lgf';
+            const sculptedSkirtGFGroup = new THREE.Group();
+            sculptedSkirtGFGroup.name = 'sculpted-skirting-gf';
+            const sculptedSkirtLGFGroup = new THREE.Group();
+            sculptedSkirtLGFGroup.name = 'sculpted-skirting-lgf';
+            const featureWallsGroup = new THREE.Group();
+            featureWallsGroup.name = 'feature-walls-3d';
+
+            groundGroup.add(
+                heightExtGroup,
+                interiorPlasterGFGroup,
+                ceilingGFGroup,
+                corniceGFGroup,
+                sculptedSkirtGFGroup,
+                featureWallsGroup
+            );
+            lowerGroup.add(
+                interiorPlasterLGFGroup,
+                ceilingLGFGroup,
+                corniceLGFGroup,
+                sculptedSkirtLGFGroup
+            );
+
+            // Height calculation helpers
+            const getCeilDeltaY = () => Number((InteriorFinishState.ceilingHeight - BASE_GF_CEIL_H).toFixed(4));
+            const getActiveGFCeilY = () => Y_GF_FFL + InteriorFinishState.ceilingHeight;
+
+            // Helper: Extrude a sloped parallelogram wall band along Z (exact match to makeWallZ orientation)
+            function makeSlopedBandZ(z0, z1, yBot0, yBot1, yTop0, yTop1, xCenter, thickness, mat, parent) {
+                const length = z1 - z0;
+                if (length <= 0.01) return null;
+                if (yTop0 <= yBot0 + 0.005 && yTop1 <= yBot1 + 0.005) return null;
+                const shape = new THREE.Shape();
+                shape.moveTo(0, yBot0);
+                shape.lineTo(length, yBot1);
+                shape.lineTo(length, Math.max(yBot1 + 0.005, yTop1));
+                shape.lineTo(0, Math.max(yBot0 + 0.005, yTop0));
+                shape.closePath();
+
+                const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
+                geo.rotateY(-Math.PI / 2);
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(xCenter + thickness / 2, 0, z0);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            // =========================================================================
+            // 29A. DYNAMIC CEILING HEIGHT ENGINE (2.40m / 2.55m / 2.80m — FLAT CEILINGS)
+            // =========================================================================
+            function applyCeilingHeightAndExtensions() {
+                clearGroup(heightExtGroup);
+
+                const deltaY = getCeilDeltaY();
+                const activeCeilY = getActiveGFCeilY();
+                const rev = currentRevision;
+                const isRev1 = rev === 1;
+                const isRev2 = rev === 2;
+                const isHip  = rev === 3 || rev === 4;
+
+                // 1. Shift entire roof assembly (and its child solarPanelsGroup) cleanly by deltaY
+                roofGroup.position.y = deltaY;
+
+                // 2. Shift Ground Floor LED downlights & point lights (preserving Lower Ground lights)
+                lightingGroup.children.forEach(obj => {
+                    if (obj.userData.baseY === undefined) {
+                        obj.userData.baseY = obj.position.y;
+                    }
+                    if (obj.userData.baseY > Y_GF_FFL + 0.5) {
+                        obj.position.y = obj.userData.baseY + deltaY;
+                    }
+                });
+
+                // 3. When raising ceiling above base 2.45m (2.55m or 2.80m), extend walls, posts, bulkheads & downpipes
+                if (deltaY > 0.002) {
+                    const extThick = isRev1 ? 0.14 : 0.24;
+                    const extTopFlat = activeCeilY + 0.12;
+
+                    // A. Exterior Side Walls (NW & SE)
+                    makeWallX(X_FRONT_BED1, X_REAR_WALL, Y_GF_CEIL - 0.02, extTopFlat, Z_NW, extThick, isRev1 ? materials.cladding : materials.brick, [], heightExtGroup);
+                    makeWallX(X_FRONT_GARAGE, X_REAR_WALL, Y_GF_CEIL - 0.02, extTopFlat, Z_SE, extThick, isRev1 ? materials.vcladding : materials.brick, [], heightExtGroup);
+
+                    // B. Front & Rear Exterior Wall Extensions (matched to Rev 1, 2, 3, or 4)
+                    if (isRev1) {
+                        // Front SW sloped cladding extensions
+                        makeSlopedBandZ(Z_NW, Z_BED1_SE, mainRoofBottomY(Z_NW) - 0.04, mainRoofBottomY(Z_BED1_SE) - 0.04, mainRoofBottomY(Z_NW) + deltaY + 0.02, mainRoofBottomY(Z_BED1_SE) + deltaY + 0.02, X_FRONT_BED1, 0.14, materials.cladding, heightExtGroup);
+                        makeSlopedBandZ(Z_BED1_SE, Z_SPLIT, mainRoofBottomY(Z_BED1_SE) - 0.04, mainRoofBottomY(Z_SPLIT) - 0.04, mainRoofBottomY(Z_BED1_SE) + deltaY + 0.02, mainRoofBottomY(Z_SPLIT) + deltaY + 0.02, X_FRONT_ENTRY, 0.14, materials.cladding, heightExtGroup);
+                        makeSlopedBandZ(Z_SPLIT, Z_SE, seRoofBottomY(Z_SPLIT) - 0.04, seRoofBottomY(Z_SE) - 0.04, seRoofBottomY(Z_SPLIT) + deltaY + 0.02, seRoofBottomY(Z_SE) + deltaY + 0.02, X_FRONT_GARAGE, 0.14, materials.vcladding, heightExtGroup);
+                        // Entry return wall extensions
+                        makeWallX(X_FRONT_BED1, X_FRONT_ENTRY, mainRoofBottomY(Z_BED1_SE) - 0.04, mainRoofBottomY(Z_BED1_SE) + deltaY + 0.02, Z_BED1_SE, 0.14, materials.cladding, [], heightExtGroup);
+                        makeWallX(X_FRONT_GARAGE, X_FRONT_ENTRY, seRoofBottomY(Z_SPLIT) - 0.04, seRoofBottomY(Z_SPLIT) + deltaY + 0.02, Z_SPLIT, 0.14, materials.vcladding, [], heightExtGroup);
+                        // Rear NE sloped cladding extensions
+                        makeSlopedBandZ(Z_NW, Z_MAIN_RIDGE, mainRoofBottomY(Z_NW) - 0.04, mainRoofBottomY(Z_MAIN_RIDGE) - 0.04, mainRoofBottomY(Z_NW) + deltaY + 0.02, mainRoofBottomY(Z_MAIN_RIDGE) + deltaY + 0.02, X_REAR_WALL, 0.14, materials.cladding, heightExtGroup);
+                        makeSlopedBandZ(Z_MAIN_RIDGE, Z_SE, seRoofBottomY(Z_MAIN_RIDGE) - 0.04, seRoofBottomY(Z_SE) - 0.04, seRoofBottomY(Z_MAIN_RIDGE) + deltaY + 0.02, seRoofBottomY(Z_SE) + deltaY + 0.02, X_REAR_WALL, 0.14, materials.cladding, heightExtGroup);
+                        // Rev 1 Front Portico Timber Posts
+                        [-0.82, 0.72].forEach(pz => {
+                            const pExt = new THREE.Mesh(new THREE.BoxGeometry(0.115, deltaY + 0.06, 0.115), materials.timberPost);
+                            pExt.position.set(X_FRONT_BED1 - 0.90, Y_GAR_SSL + 2.55 + deltaY / 2, pz);
+                            pExt.castShadow = true;
+                            heightExtGroup.add(pExt);
+                        });
+                    } else if (isRev2) {
+                        const Z_LEFT_PIER_END = Z_NW + 0.72;
+                        const Z_PIER_SE = Z_SPLIT + 0.56;
+                        // Front SW: Left brick corner, FC gable sheeting, full-height feature brick pier & brick garage
+                        makeSlopedBandZ(Z_NW, Z_LEFT_PIER_END, mainRoofBottomY(Z_NW) - 0.04, mainRoofBottomY(Z_LEFT_PIER_END) - 0.04, mainRoofBottomY(Z_NW) + deltaY + 0.02, mainRoofBottomY(Z_LEFT_PIER_END) + deltaY + 0.02, X_FRONT_BED1, 0.24, materials.brick, heightExtGroup);
+                        makeSlopedBandZ(Z_LEFT_PIER_END, Z_SPLIT, mainRoofBottomY(Z_LEFT_PIER_END) - 0.04, mainRoofBottomY(Z_SPLIT) - 0.04, mainRoofBottomY(Z_LEFT_PIER_END) + deltaY + 0.02, mainRoofBottomY(Z_SPLIT) + deltaY + 0.02, X_FRONT_BED1, 0.18, materials.fcSheet, heightExtGroup);
+                        makeSlopedBandZ(Z_SPLIT, Z_PIER_SE, mainRoofBottomY(Z_SPLIT) - 0.04, mainRoofBottomY(Z_PIER_SE) - 0.04, mainRoofBottomY(Z_SPLIT) + deltaY + 0.02, mainRoofBottomY(Z_PIER_SE) + deltaY + 0.02, X_FRONT_BED1 + 0.14, 0.52, materials.brick, heightExtGroup);
+                        makeSlopedBandZ(Z_PIER_SE - 0.04, Z_SE, seRoofBottomY(Z_PIER_SE - 0.04) - 0.04, seRoofBottomY(Z_SE) - 0.04, seRoofBottomY(Z_PIER_SE - 0.04) + deltaY + 0.02, seRoofBottomY(Z_SE) + deltaY + 0.02, X_FRONT_GARAGE, 0.24, materials.brick, heightExtGroup);
+                        // Rear NE: Brick up to lifted flat balcony roof + shifted FC sheeting triangles above balcony roof
+                        const newBalcRoofY = Y_GF_CEIL + 0.04 + deltaY;
+                        makeWallZ(Z_NW, Z_SE, Y_GF_CEIL - 0.02, newBalcRoofY + 0.02, newBalcRoofY + 0.02, X_REAR_WALL, 0.24, materials.brick, [], heightExtGroup);
+                        makeSlopedBandZ(Z_NW, Z_MAIN_RIDGE, newBalcRoofY - 0.02, newBalcRoofY - 0.02, mainRoofBottomY(Z_NW) + deltaY + 0.02, mainRoofBottomY(Z_MAIN_RIDGE) + deltaY + 0.02, X_REAR_WALL, 0.18, materials.fcSheet, heightExtGroup);
+                        makeSlopedBandZ(Z_MAIN_RIDGE, Z_SE, newBalcRoofY - 0.02, newBalcRoofY - 0.02, seRoofBottomY(Z_MAIN_RIDGE) + deltaY + 0.02, seRoofBottomY(Z_SE) + deltaY + 0.02, X_REAR_WALL, 0.18, materials.fcSheet, heightExtGroup);
+                    } else if (isHip) {
+                        // Rev 3 & Rev 4: Clean flat-topped full brick veneer extensions up to lifted 22.5° hip eave
+                        const hipTop = activeCeilY + 0.08;
+                        makeWallZ(Z_NW, Z_BED1_SE, Y_GF_CEIL - 0.02, hipTop, hipTop, X_FRONT_BED1, 0.24, materials.brick, [], heightExtGroup);
+                        makeWallZ(Z_BED1_SE, Z_SPLIT, Y_GF_CEIL - 0.02, hipTop, hipTop, X_FRONT_ENTRY, 0.24, materials.brick, [], heightExtGroup);
+                        makeWallX(X_FRONT_BED1, X_FRONT_ENTRY, Y_GF_CEIL - 0.02, hipTop, Z_BED1_SE, 0.24, materials.brick, [], heightExtGroup);
+                        makeWallX(X_FRONT_GARAGE, X_FRONT_ENTRY, Y_GF_CEIL - 0.02, hipTop, Z_SPLIT, 0.24, materials.brick, [], heightExtGroup);
+                        makeWallZ(Z_NW, Z_SE, Y_GF_CEIL - 0.02, hipTop, hipTop, X_REAR_WALL, 0.24, materials.brick, [], heightExtGroup);
+
+                        if (rev === 3) {
+                            makeWallZ(Z_SPLIT, Z_SE, Y_GF_CEIL - 0.02, hipTop, hipTop, X_FRONT_GARAGE, 0.24, materials.brick, [], heightExtGroup);
+                            // Extend Rev 3 twin front brick portico piers
+                            [-0.885, 0.785].forEach(pz => {
+                                const pExt = new THREE.Mesh(new THREE.BoxGeometry(0.35, deltaY + 0.06, 0.35), materials.brick);
+                                pExt.position.set(7.275, Y_GF_CEIL - 0.02 + deltaY / 2, pz);
+                                pExt.castShadow = true;
+                                pExt.receiveShadow = true;
+                                heightExtGroup.add(pExt);
+                            });
+                        } else {
+                            // Rev 4: Single brick entry pillar + garage wall extension
+                            const Z_PIER_SE = Z_SPLIT + 0.56;
+                            makeWallZ(Z_PIER_SE - 0.04, Z_SE, Y_GF_CEIL - 0.02, hipTop, hipTop, X_FRONT_GARAGE, 0.24, materials.brick, [], heightExtGroup);
+                            const pillarDepth = (X_FRONT_GARAGE + 0.12) - (X_FRONT_BED1 - 0.12);
+                            const pillarExt = new THREE.Mesh(new THREE.BoxGeometry(pillarDepth, deltaY + 0.10, 0.56), materials.brick);
+                            pillarExt.position.set((X_FRONT_BED1 - 0.12) + pillarDepth / 2, Y_GF_CEIL + 0.04 + deltaY / 2, Z_SPLIT + 0.28);
+                            pillarExt.castShadow = true;
+                            pillarExt.receiveShadow = true;
+                            heightExtGroup.add(pillarExt);
+                        }
+                    }
+
+                    // C. Rear Alfresco / Balcony Corner Post Extensions
+                    const Z_ALF_NW = -2.75, Z_ALF_SE = 2.45;
+                    const postMat = isRev1 ? materials.timberPost : materials.rev2Post;
+                    const baseTopNW = isRev1 ? mainRoofBottomY(Z_ALF_NW) : (Y_GF_CEIL - 0.02);
+                    const baseTopSE = isRev1 ? mainRoofBottomY(Z_ALF_SE) : (Y_GF_CEIL - 0.02);
+                    [
+                        { z: Z_ALF_NW + 0.08, y0: baseTopNW },
+                        { z: Z_ALF_SE - 0.08, y0: baseTopSE }
+                    ].forEach(p => {
+                        const ext = new THREE.Mesh(new THREE.BoxGeometry(0.115, deltaY + 0.06, 0.115), postMat);
+                        ext.position.set(X_ALFRESCO_END - 0.08, p.y0 + deltaY / 2, p.z);
+                        ext.castShadow = true;
+                        heightExtGroup.add(ext);
+                    });
+
+                    // D. Exterior Downpipe Extensions up to Lifted Roof Eaves
+                    downpipesGroup.children.forEach(dp => {
+                        if (!dp.isMesh || !dp.geometry.parameters) return;
+                        const topY = dp.position.y + dp.geometry.parameters.height / 2;
+                        const dpExt = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, deltaY + 0.06, 10), materials.downpipe);
+                        dpExt.position.set(dp.position.x, topY + deltaY / 2, dp.position.z);
+                        dpExt.castShadow = true;
+                        heightExtGroup.add(dpExt);
+                    });
+
+                    // E. Internal Partition Wall & Kitchen Bulkhead Extensions up to activeCeilY
+                    makeWallZ(Z_NW + 0.1, Z_BED1_SE, Y_GF_CEIL - 0.02, activeCeilY + 0.02, activeCeilY + 0.02, 11.62, 0.10, materials.interiorWall, [], heightExtGroup);
+                    makeWallZ(Z_NW + 0.1, Z_BED1_SE, Y_GF_CEIL - 0.02, activeCeilY + 0.02, activeCeilY + 0.02, 14.19, 0.10, materials.interiorWall, [], heightExtGroup);
+                    makeWallX(11.62, 14.19, Y_GF_CEIL - 0.02, activeCeilY + 0.02, Z_BED1_SE, 0.10, materials.interiorWall, [], heightExtGroup);
+                    makeWallX(11.70, 14.10, Y_GF_CEIL - 0.05, activeCeilY + 0.02, -2.55, 0.09, materials.interiorWall, [], heightExtGroup); // Ensuite/WIR divider
+                    makeWallX(X_FRONT_ENTRY, 15.05, Y_GF_CEIL - 0.02, activeCeilY + 0.02, Z_SPLIT, 0.10, materials.interiorWall, [], heightExtGroup);
+                    makeWallZ(Z_SPLIT, Z_SE - 0.1, Y_GF_CEIL - 0.02, activeCeilY + 0.02, activeCeilY + 0.02, 15.05, 0.10, materials.interiorWall, [], heightExtGroup);
+
+                    // Extend Kitchen Overhead Bulkheads seamlessly up to the raised ceiling
+                    const bh1 = new THREE.Mesh(new THREE.BoxGeometry(0.38, deltaY + 0.04, 2.98), materials.interiorWall);
+                    bh1.position.set(14.44, Y_GF_FFL + 2.46 + deltaY / 2, -3.25);
+                    const bh2 = new THREE.Mesh(new THREE.BoxGeometry(2.45, deltaY + 0.04, 0.36), materials.interiorWall);
+                    bh2.position.set(16.12, Y_GF_FFL + 2.46 + deltaY / 2, Z_NW + 0.31);
+                    heightExtGroup.add(bh1, bh2);
+
+                    // Extend Feature Pendant Drop Cords so pendants stay anchored to 2.55m / 2.80m ceiling
+                    if (SelectionsState.pendants === 'coastal') {
+                        const cordMat = new THREE.MeshStandardMaterial({ color: 0x22262b, roughness: 0.4 });
+                        [
+                            { x: 16.60, z: -2.60 },
+                            { x: 16.60, z: -1.70 },
+                            { x: 19.62, z: -3.38 }
+                        ].forEach(pt => {
+                            const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, deltaY + 0.04, 6), cordMat);
+                            cord.position.set(pt.x, Y_GF_CEIL + deltaY / 2, pt.z);
+                            heightExtGroup.add(cord);
+                        });
+                    }
+                }
+
+                // 4. Update Footer RL Telemetry with Active Ceiling Height & Exact Ridge RL
+                const baseRidgeRL = isHip ? 102.875 : 102.275;
+                const liveRidgeRL = (baseRidgeRL + deltaY).toFixed(3);
+                const roofTag = isHip ? ' (22.5° Hip)' : ' (Skillion)';
+                document.querySelectorAll('.font-mono.text-slate-400').forEach(el => {
+                    if (el.textContent.includes('FFL 98.135')) {
+                        el.textContent = `FFL 98.135 • Ceil ${InteriorFinishState.ceilingHeight.toFixed(2)}m • LGF 95.325 • Ridge ${liveRidgeRL}${roofTag}`;
+                    }
+                });
+            }
+
+            // Optional High-Head Openings Helper (lifts GF living/entry doors & windows to ~2380mm when ceiling >= 2.55m)
+            const savedStdHeads = {};
+            function applyHighHeadMode(enable) {
+                const canHigh = InteriorFinishState.ceilingHeight >= 2.55;
+                const active = Boolean(enable && canHigh);
+                InteriorFinishState.highHeadOpenings = active;
+
+                const targets = [
+                    { id: 'D01', high: 2.34 },
+                    { id: 'D07', high: 2.38 },
+                    { id: 'W01', high: 2.38 },
+                    { id: 'W01A', high: 2.38 },
+                    { id: 'W01B', high: 2.38 },
+                    { id: 'W01C', high: 2.38 },
+                    { id: 'W04', high: 2.36 },
+                    { id: 'W05', high: 2.36 },
+                    { id: 'W06', high: 2.36 }
+                ];
+
+                targets.forEach(t => {
+                    const o = OPENING_STATE[t.id];
+                    if (!o) return;
+                    if (active) {
+                        if (savedStdHeads[t.id] === undefined) savedStdHeads[t.id] = o.head;
+                        o.head = Math.min(o.maxHead || 2.40, t.high);
+                    } else if (savedStdHeads[t.id] !== undefined) {
+                        o.head = savedStdHeads[t.id];
+                        delete savedStdHeads[t.id];
+                    }
+                });
+            }
+
+// =========================================================================
+            // 29B. STATE READERS FOR SECTION 27 (ZERO-EDIT CROSS-PLUGIN SYNC)
+            // =========================================================================
+            function isTripleW01Active() {
+                const btn = document.getElementById('des-w01-triple-btn');
+                if (btn) return btn.classList.contains('active-upg');
+                return Array.from(winSelect.options).some(o => o.value === 'W01A');
+            }
+
+            function isStairWindowW09Active() {
+                const activeBtn = document.querySelector('.des-stair-btn.active-upg');
+                if (activeBtn && activeBtn.dataset.preset && activeBtn.dataset.preset !== 'none') return true;
+                return Array.from(winSelect.options).some(o => o.value === 'W09');
+            }
+
+            function isMasterBedUnderW02() {
+                const btn = document.getElementById('des-bed-w02-btn');
+                return Boolean(btn && btn.classList.contains('active-sky'));
+            }
+
+            // General inward-extruded molding helper:
+            // Traverse walls in room loop: SW (+Z) -> SE (+X) -> NE (-Z) -> NW (-X)
+            // so profile +X always projects cleanly INWARD into the room with outward normals.
+            function addExtrudedProfileRun(x0, z0, x1, z1, yBase, profileShape, mat, parent, cast = false) {
+                const dx = x1 - x0;
+                const dz = z1 - z0;
+                const len = Math.hypot(dx, dz);
+                if (len < 0.04) return null;
+
+                const geo = new THREE.ExtrudeGeometry(profileShape, { depth: len, bevelEnabled: false });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(x0, yBase, z0);
+                mesh.rotation.y = Math.atan2(dx, dz);
+                mesh.castShadow = cast;
+                mesh.receiveShadow = true;
+                parent.add(mesh);
+                return mesh;
+            }
+
+            // =========================================================================
+            // 29C. FULL INTERIOR PLASTER SHELL & RECESSED WINDOW REVEALS (GF + LGF)
+            // =========================================================================
+            function rebuildInteriorPlasterShell() {
+                clearGroup(interiorPlasterGFGroup);
+                clearGroup(interiorPlasterLGFGroup);
+
+                const S = OPENING_STATE;
+                const isRev1 = currentRevision === 1;
+                const gfHalfT = isRev1 ? 0.07 : 0.12;
+                const pThick = 0.014;
+                const gfOff = gfHalfT + pThick / 2 + 0.002; // Flush on inside face of brick/cladding
+                const activeCeilY = getActiveGFCeilY();
+                const stairOpen = isStairWindowW09Active();
+                const tripleFront = isTripleW01Active();
+
+                const spanX = (o) => ({ x0: o.center - o.width / 2, x1: o.center + o.width / 2, y0: o.baseY() + o.sill, y1: o.baseY() + o.head });
+                const spanZ = (o) => ({ z0: o.center - o.width / 2, z1: o.center + o.width / 2, y0: o.baseY() + o.sill, y1: o.baseY() + o.head });
+
+                // --- 1. GROUND FLOOR PERIMETER GYPROCK LININGS ---
+                // NW Interior Wall (W02, W03, W04)
+                makeWallX(
+                    X_FRONT_BED1 + gfHalfT, X_REAR_WALL - gfHalfT,
+                    Y_GF_FFL, activeCeilY, Z_NW + gfOff, pThick, materials.interiorWall,
+                    [spanX(S.W02), spanX(S.W03), spanX(S.W04)], interiorPlasterGFGroup
+                );
+
+                // SE Interior Wall (Garage segment + Stairwell/Living segment with optional W09 cutout)
+                makeWallX(
+                    X_FRONT_GARAGE + gfHalfT, 15.05,
+                    Y_GAR_SSL, activeCeilY, Z_SE - gfOff, pThick, materials.interiorWall,
+                    [], interiorPlasterGFGroup
+                );
+                const gfSeOpenings = [];
+                if (stairOpen && S.W09) {
+                    const w9 = spanX(S.W09);
+                    if (w9.y1 > Y_GF_FFL + 0.05) {
+                        gfSeOpenings.push({ x0: w9.x0, x1: w9.x1, y0: Math.max(Y_GF_FFL, w9.y0), y1: w9.y1 });
+                    }
+                }
+                makeWallX(
+                    15.05, X_REAR_WALL - gfHalfT,
+                    Y_GF_FFL, activeCeilY, Z_SE - gfOff, pThick, materials.interiorWall,
+                    gfSeOpenings, interiorPlasterGFGroup
+                );
+
+                // Front SW Bed 1 Interior Wall (Single W01 or Triple 1.A/1.B/1.C)
+                const frontBedOpenings = (tripleFront && S.W01A && S.W01B && S.W01C)
+                    ? [spanZ(S.W01A), spanZ(S.W01B), spanZ(S.W01C)]
+                    : [spanZ(S.W01)];
+                makeWallZ(
+                    Z_NW + gfHalfT, Z_BED1_SE - 0.04,
+                    Y_GF_FFL, activeCeilY, activeCeilY, X_FRONT_BED1 + gfOff, pThick, materials.interiorWall,
+                    frontBedOpenings, interiorPlasterGFGroup
+                );
+
+                // Front SW Recessed Entry Wall (D01) + Side Return Linings inside Bed 1 & Garage
+                makeWallZ(
+                    Z_BED1_SE + 0.04, Z_SPLIT - 0.04,
+                    Y_GF_FFL, activeCeilY, activeCeilY, X_FRONT_ENTRY + gfOff, pThick, materials.interiorWall,
+                    [spanZ(S.D01)], interiorPlasterGFGroup
+                );
+                makeWallX(
+                    X_FRONT_BED1 + gfHalfT, X_FRONT_ENTRY + gfHalfT,
+                    Y_GF_FFL, activeCeilY, Z_BED1_SE - gfOff, pThick, materials.interiorWall,
+                    [], interiorPlasterGFGroup
+                );
+                makeWallX(
+                    X_FRONT_GARAGE + gfHalfT, X_FRONT_ENTRY + gfHalfT,
+                    Y_GAR_SSL, activeCeilY, Z_SPLIT + gfOff, pThick, materials.interiorWall,
+                    [], interiorPlasterGFGroup
+                );
+
+                // Front SW Garage Interior Lining (Fully Lined Garage per GJ Inclusions)
+                makeWallZ(
+                    Z_SPLIT + gfHalfT, Z_SE - gfHalfT,
+                    Y_GAR_SSL, activeCeilY, activeCeilY, X_FRONT_GARAGE + gfOff, pThick, materials.interiorWall,
+                    [spanZ(S.D02)], interiorPlasterGFGroup
+                );
+
+                // Rear NE Interior Wall (W05, D07, W06)
+                makeWallZ(
+                    Z_NW + gfHalfT, Z_SE - gfHalfT,
+                    Y_GF_FFL, activeCeilY, activeCeilY, X_REAR_WALL - gfOff, pThick, materials.interiorWall,
+                    [spanZ(S.W05), spanZ(S.D07), spanZ(S.W06)], interiorPlasterGFGroup
+                );
+
+                // --- 2. LOWER GROUND PERIMETER GYPROCK LININGS ---
+                const lgfNW = isRev1 ? (Z_NW + 0.068) : (Z_NW + 0.128);
+                const lgfSE = isRev1 ? (Z_SE - 0.068) : (Z_SE - 0.128);
+                const lgfSW = X_LOWER_START + 0.128;
+                const lgfNE = X_REAR_WALL - 0.128;
+
+                // LGF NW Wall (D10)
+                makeWallX(lgfSW, lgfNE, Y_LGF_SSL, Y_LGF_CEIL, lgfNW, pThick, materials.interiorWall, [spanX(S.D10)], interiorPlasterLGFGroup);
+
+                // LGF SE Wall (runs up to Y_GF_FFL inside stairwell void so floor-joist band is plastered cleanly)
+                const lgfSeOpenings = [];
+                if (stairOpen && S.W09) {
+                    const w9 = spanX(S.W09);
+                    if (w9.y0 < Y_GF_FFL - 0.02) {
+                        lgfSeOpenings.push({ x0: w9.x0, x1: w9.x1, y0: Math.max(Y_LGF_SSL, w9.y0), y1: Math.min(Y_GF_FFL, w9.y1) });
+                    }
+                }
+                makeWallX(lgfSW, 15.05, Y_LGF_SSL, Y_LGF_CEIL, lgfSE, pThick, materials.interiorWall, [], interiorPlasterLGFGroup);
+                makeWallX(15.05, 17.02, Y_LGF_SSL, Y_GF_FFL, lgfSE, pThick, materials.interiorWall, lgfSeOpenings, interiorPlasterLGFGroup);
+                makeWallX(17.02, lgfNE, Y_LGF_SSL, Y_LGF_CEIL, lgfSE, pThick, materials.interiorWall, [], interiorPlasterLGFGroup);
+
+                // LGF SW Retaining Wall & Rear NE Wall (W07, D13, W08)
+                makeWallZ(lgfNW, lgfSE, Y_LGF_SSL, Y_LGF_CEIL, Y_LGF_CEIL, lgfSW, pThick, materials.interiorWall, [], interiorPlasterLGFGroup);
+                makeWallZ(lgfNW, lgfSE, Y_LGF_SSL, Y_LGF_CEIL, Y_LGF_CEIL, lgfNE, pThick, materials.interiorWall, [
+                    spanZ(S.W07), spanZ(S.D13), spanZ(S.W08)
+                ], interiorPlasterLGFGroup);
+
+                // Stairwell Joist-Zone Void Aprons (covers exposed 360mm slab edge around stairs)
+                makeWallZ(1.45, lgfSE, Y_LGF_CEIL, Y_GF_FFL, Y_GF_FFL, 15.06, 0.02, materials.interiorWall, [], interiorPlasterLGFGroup);
+                makeWallZ(1.45, lgfSE, Y_LGF_CEIL, Y_GF_FFL, Y_GF_FFL, 16.99, 0.02, materials.interiorWall, [], interiorPlasterLGFGroup);
+                makeWallX(15.05, 17.00, Y_LGF_CEIL, Y_GF_FFL, 1.46, 0.02, materials.interiorWall, [], interiorPlasterLGFGroup);
+
+                // --- 3. PAINTED TIMBER/PLASTER WINDOW & DOOR JAMB REVEALS ---
+                const addReveal = (cfg, wallHalfT, parentGrp) => {
+                    if (!cfg || cfg.id === 'D02') return;
+                    const depth = Math.max(0.05, wallHalfT + 0.02);
+                    const y0 = cfg.baseY() + cfg.sill;
+                    const y1 = cfg.baseY() + cfg.head;
+                    const w = cfg.width;
+                    const h = y1 - y0;
+                    const rT = 0.016;
+                    const isDoor = cfg.category === 'door';
+                    const outSign = cfg.outwardSign;
+                    const g = new THREE.Group();
+
+                    // Top, left, right (and sill for windows) jamb liners bridging frame -> interior plaster
+                    const zShift = -outSign * (depth / 2 + 0.02);
+                    const topR = new THREE.Mesh(new THREE.BoxGeometry(w, rT, depth), materials.interiorTrim);
+                    topR.position.set(0, h / 2 - rT / 2, zShift);
+                    const leftR = new THREE.Mesh(new THREE.BoxGeometry(rT, h, depth), materials.interiorTrim);
+                    leftR.position.set(-w / 2 + rT / 2, 0, zShift);
+                    const rightR = new THREE.Mesh(new THREE.BoxGeometry(rT, h, depth), materials.interiorTrim);
+                    rightR.position.set(w / 2 - rT / 2, 0, zShift);
+                    g.add(topR, leftR, rightR);
+
+                    if (!isDoor) {
+                        const botR = new THREE.Mesh(new THREE.BoxGeometry(w + 0.02, rT * 1.2, depth + 0.015), materials.interiorTrim);
+                        botR.position.set(0, -h / 2 + rT / 2, zShift - outSign * 0.008);
+                        g.add(botR);
+                    }
+
+                    const midY = (y0 + y1) / 2;
+                    if (cfg.axis === 'X') {
+                        g.position.set(cfg.center, midY, cfg.pos);
+                    } else {
+                        g.rotation.y = Math.PI / 2;
+                        g.position.set(cfg.pos, midY, cfg.center);
+                    }
+                    parentGrp.add(g);
+                };
+
+                const gfRevealList = [S.W02, S.W03, S.W04, S.W05, S.W06, S.D01, S.D07];
+                if (tripleFront && S.W01A) gfRevealList.push(S.W01A, S.W01B, S.W01C);
+                else gfRevealList.push(S.W01);
+                if (stairOpen && S.W09) gfRevealList.push(S.W09);
+
+                gfRevealList.forEach(o => addReveal(o, gfHalfT, interiorPlasterGFGroup));
+                [S.W07, S.W08, S.D10, S.D13].forEach(o => addReveal(o, 0.12, interiorPlasterLGFGroup));
+            }
+
+            // =========================================================================
+            // 29D. FLAT GYPROCK CEILINGS (GF + LGF WITH STAIRWELL VOID CUTOUT)
+            // =========================================================================
+            function rebuildCeilings() {
+                clearGroup(ceilingGFGroup);
+                clearGroup(ceilingLGFGroup);
+
+                const activeCeilY = getActiveGFCeilY();
+                const isRev1 = currentRevision === 1;
+                const inset = isRev1 ? 0.07 : 0.12;
+
+                // 1. Ground Floor Gyprock Ceiling (exact footprint respecting recessed front entry & garage step)
+                const gfShape = new THREE.Shape();
+                gfShape.moveTo(X_FRONT_BED1 + inset, -(Z_NW + inset));
+                gfShape.lineTo(X_REAR_WALL - inset, -(Z_NW + inset));
+                gfShape.lineTo(X_REAR_WALL - inset, -(Z_SE - inset));
+                gfShape.lineTo(X_FRONT_GARAGE + inset, -(Z_SE - inset));
+                gfShape.lineTo(X_FRONT_GARAGE + inset, -(Z_SPLIT + 0.02));
+                gfShape.lineTo(X_FRONT_ENTRY + inset, -(Z_SPLIT + 0.02));
+                gfShape.lineTo(X_FRONT_ENTRY + inset, -(Z_BED1_SE - 0.02));
+                gfShape.lineTo(X_FRONT_BED1 + inset, -(Z_BED1_SE - 0.02));
+                gfShape.closePath();
+
+                const gfGeo = new THREE.ExtrudeGeometry(gfShape, { depth: 0.025, bevelEnabled: false });
+                gfGeo.rotateX(-Math.PI / 2);
+                const gfCeilMesh = new THREE.Mesh(gfGeo, intFinishMats.ceiling);
+                gfCeilMesh.position.y = activeCeilY;
+                gfCeilMesh.receiveShadow = true;
+                ceilingGFGroup.add(gfCeilMesh);
+
+                // 2. Lower Ground Gyprock Ceiling (with true stairwell void hole x: 15.05..17.00, z: 1.45..4.48)
+                const lgfNW = isRev1 ? (Z_NW + 0.06) : (Z_NW + 0.12);
+                const lgfSE = isRev1 ? (Z_SE - 0.06) : (Z_SE - 0.12);
+                makeFloorSlabWithHoles(
+                    X_LOWER_START + 0.12, X_REAR_WALL - 0.12,
+                    lgfNW, lgfSE,
+                    Y_LGF_CEIL + 0.025, 0.025,
+                    intFinishMats.ceiling,
+                    [{ x0: 15.05, x1: 17.00, z0: 1.45, z1: lgfSE }],
+                    ceilingLGFGroup
+                );
+
+                // Respect current Roof Off / Cutaway mode immediately
+                ceilingGFGroup.visible = roofGroup.visible;
+            }
+
+            // =========================================================================
+            // 29E. CORNICE PROFILES (SQUARE-SET STD | 90mm COVE | P50 SHADOWLINE)
+            // =========================================================================
+            function createCorniceProfileShape(style) {
+                const s = new THREE.Shape();
+                if (style === 'cove90') {
+                    // 90mm concave cove cornice (drops 90mm down wall, projects 90mm along ceiling)
+                    s.moveTo(0, 0);
+                    s.lineTo(0.090, 0);
+                    s.lineTo(0.090, -0.012);
+                    s.quadraticCurveTo(0.025, -0.025, 0.012, -0.090);
+                    s.lineTo(0, -0.090);
+                    s.closePath();
+                } else {
+                    // P50 12mm recessed dark shadowline groove at ceiling junction
+                    s.moveTo(0, 0);
+                    s.lineTo(0.016, 0);
+                    s.lineTo(0.016, -0.014);
+                    s.lineTo(0, -0.014);
+                    s.closePath();
+                }
+                return s;
+            }
+
+            function rebuildCornices() {
+                clearGroup(corniceGFGroup);
+                clearGroup(corniceLGFGroup);
+                corniceGFGroup.visible = roofGroup.visible;
+
+                if (InteriorFinishState.corniceStyle === 'squareset') return; // Flush square-set needs no added strip
+
+                const shape = createCorniceProfileShape(InteriorFinishState.corniceStyle);
+                const mat = InteriorFinishState.corniceStyle === 'shadowline' ? intFinishMats.shadowGap : intFinishMats.cornice;
+                const isRev1 = currentRevision === 1;
+                const gfIn = (isRev1 ? 0.07 : 0.12) + 0.015;
+                const activeCeilY = getActiveGFCeilY();
+
+                const addRoomCorniceLoop = (x0, x1, z0, z1, yCeil, parentGrp) => {
+                    addExtrudedProfileRun(x0, z0, x0, z1, yCeil, shape, mat, parentGrp); // SW (+Z)
+                    addExtrudedProfileRun(x0, z1, x1, z1, yCeil, shape, mat, parentGrp); // SE (+X)
+                    addExtrudedProfileRun(x1, z1, x1, z0, yCeil, shape, mat, parentGrp); // NE (-Z)
+                    addExtrudedProfileRun(x1, z0, x0, z0, yCeil, shape, mat, parentGrp); // NW (-X)
+                };
+
+                // Ground Floor main rooms: Open Living/Kitchen/Dining, Master Bed 1, Entry Hall
+                addRoomCorniceLoop(14.24, X_REAR_WALL - gfIn, Z_NW + gfIn, Z_SE - gfIn, activeCeilY, corniceGFGroup);
+                addRoomCorniceLoop(X_FRONT_BED1 + gfIn, 11.57, Z_NW + gfIn, Z_BED1_SE - 0.06, activeCeilY, corniceGFGroup);
+                addRoomCorniceLoop(X_FRONT_ENTRY + gfIn, 14.24, Z_BED1_SE + 0.05, Z_SPLIT - 0.05, activeCeilY, corniceGFGroup);
+
+                // Lower Ground rooms: Rumpus, Bed 3, Bed 4
+                const lgfNW = isRev1 ? (Z_NW + 0.076) : (Z_NW + 0.136);
+                const lgfSE = isRev1 ? (Z_SE - 0.076) : (Z_SE - 0.136);
+                const lgfNE = X_REAR_WALL - 0.136;
+                addRoomCorniceLoop(16.86, lgfNE, -1.70, 1.40, Y_LGF_CEIL, corniceLGFGroup);     // Rumpus
+                addRoomCorniceLoop(16.86, lgfNE, lgfNW, -1.80, Y_LGF_CEIL, corniceLGFGroup);    // Bed 3
+                addRoomCorniceLoop(16.86, lgfNE, 1.50, lgfSE, Y_LGF_CEIL, corniceLGFGroup);     // Bed 4
+            }
+
+            // =========================================================================
+            // 29F. SCULPTED 3D SKIRTINGS (66mm DAR | 66mm HALF-SPLAY | 90mm | SHADOWLINE)
+            // =========================================================================
+            function createSkirtingProfileShape(profileKey) {
+                const s = new THREE.Shape();
+                if (profileKey === '66splay') {
+                    // 66mm x 18mm Half-Splayed (crisp 45° chamfer across top third)
+                    s.moveTo(0, 0);
+                    s.lineTo(0.018, 0);
+                    s.lineTo(0.018, 0.044);
+                    s.lineTo(0.005, 0.066);
+                    s.lineTo(0, 0.066);
+                    s.closePath();
+                } else if (profileKey === '90tall') {
+                    // 90mm x 19mm Architectural Tall Coastal/Colonial profile with twin stepped shadow bevels
+                    s.moveTo(0, 0);
+                    s.lineTo(0.019, 0);
+                    s.lineTo(0.019, 0.062);
+                    s.lineTo(0.013, 0.068);
+                    s.lineTo(0.015, 0.078);
+                    s.lineTo(0.007, 0.090);
+                    s.lineTo(0, 0.090);
+                    s.closePath();
+                } else if (profileKey === 'shadowline') {
+                    // 16mm recessed dark shadow gap at base of wall
+                    s.moveTo(0, 0);
+                    s.lineTo(0.012, 0);
+                    s.lineTo(0.012, 0.016);
+                    s.lineTo(0, 0.016);
+                    s.closePath();
+                } else {
+                    // 66mm x 18mm DAR (Dressed All Round square modern edge w/ 3mm top micro-bevel)
+                    s.moveTo(0, 0);
+                    s.lineTo(0.018, 0);
+                    s.lineTo(0.018, 0.063);
+                    s.lineTo(0.015, 0.066);
+                    s.lineTo(0, 0.066);
+                    s.closePath();
+                }
+                return s;
+            }
+
+            function rebuildSculptedSkirtings() {
+                clearGroup(sculptedSkirtGFGroup);
+                clearGroup(sculptedSkirtLGFGroup);
+                // Clear legacy flat skirting/VJ boxes from base trimsGroup (superseded by real 3D geometry!)
+                clearGroup(trimsGroup);
+
+                const profKey = SelectionsState.trimProfile || '66dar';
+                const shape = createSkirtingProfileShape(profKey);
+                const mat = profKey === 'shadowline'
+                    ? intFinishMats.shadowGap
+                    : (InteriorFinishState.skirtingFinish === 'oak' ? intFinishMats.skirtingOak : materials.interiorTrim);
+
+                const isRev1 = currentRevision === 1;
+                const gfIn = (isRev1 ? 0.07 : 0.12) + 0.015;
+                const gfY = Y_GF_FFL + 0.004;
+                const lgfY = Y_LGF_SSL + 0.024;
+                const S = OPENING_STATE;
+
+                // Helper: split a wall skirting run cleanly around any floor-level door openings
+                const runX = (x0, x1, z, y, faceDir, doors, parent) => {
+                    // faceDir: +1 means wall faces +Z (NW wall, traverse x1 -> x0); -1 means faces -Z (SE wall, traverse x0 -> x1)
+                    const segs = [[Math.min(x0, x1), Math.max(x0, x1)]];
+                    doors.forEach(([d0, d1]) => {
+                        for (let i = segs.length - 1; i >= 0; i--) {
+                            const [a, b] = segs[i];
+                            if (d1 <= a || d0 >= b) continue;
+                            segs.splice(i, 1);
+                            if (d0 > a + 0.06) segs.push([a, d0]);
+                            if (d1 < b - 0.06) segs.push([d1, b]);
+                        }
+                    });
+                    segs.forEach(([a, b]) => {
+                        if (faceDir > 0) addExtrudedProfileRun(b, z, a, z, y, shape, mat, parent);
+                        else addExtrudedProfileRun(a, z, b, z, y, shape, mat, parent);
+                    });
+                };
+
+                const runZ = (z0, z1, x, y, faceDir, doors, parent) => {
+                    // faceDir: +1 means wall faces +X (SW wall, traverse z0 -> z1); -1 means faces -X (NE wall, traverse z1 -> z0)
+                    const segs = [[Math.min(z0, z1), Math.max(z0, z1)]];
+                    doors.forEach(([d0, d1]) => {
+                        for (let i = segs.length - 1; i >= 0; i--) {
+                            const [a, b] = segs[i];
+                            if (d1 <= a || d0 >= b) continue;
+                            segs.splice(i, 1);
+                            if (d0 > a + 0.06) segs.push([a, d0]);
+                            if (d1 < b - 0.06) segs.push([d1, b]);
+                        }
+                    });
+                    segs.forEach(([a, b]) => {
+                        if (faceDir > 0) addExtrudedProfileRun(x, a, x, b, y, shape, mat, parent);
+                        else addExtrudedProfileRun(x, b, x, a, y, shape, mat, parent);
+                    });
+                };
+
+                const d01Gap = [S.D01.center - S.D01.width / 2 - 0.06, S.D01.center + S.D01.width / 2 + 0.06];
+                const d07Gap = [S.D07.center - S.D07.width / 2 - 0.06, S.D07.center + S.D07.width / 2 + 0.06];
+                const d13Gap = [S.D13.center - S.D13.width / 2 - 0.06, S.D13.center + S.D13.width / 2 + 0.06];
+
+                // --- GROUND FLOOR SKIRTINGS ---
+                // 1. Living / Dining / Entry perimeter
+                runX(17.65, X_REAR_WALL - gfIn, Z_NW + gfIn, gfY, +1, [], sculptedSkirtGFGroup);               // Dining NW wall
+                runZ(Z_NW + gfIn, Z_SE - gfIn, X_REAR_WALL - gfIn, gfY, -1, [d07Gap], sculptedSkirtGFGroup);   // Rear NE wall (cut around D07)
+                runX(17.07, X_REAR_WALL - gfIn, Z_SE - gfIn, gfY, -1, [], sculptedSkirtGFGroup);               // Family SE wall (clear of stairwell)
+                runZ(1.45, Z_SE - gfIn, 17.07, gfY, +1, [], sculptedSkirtGFGroup);                             // Stairwell guard wall facing Family
+                runX(X_FRONT_ENTRY + gfIn, 15.05, Z_SPLIT - 0.055, gfY, -1, [[14.00, 14.98]], sculptedSkirtGFGroup); // Entry / Garage wall (cut around D03)
+                runZ(Z_BED1_SE + 0.05, Z_SPLIT - 0.05, X_FRONT_ENTRY + gfIn, gfY, +1, [d01Gap], sculptedSkirtGFGroup); // Entry front wall (cut around D01)
+                runX(11.62, 14.19, Z_BED1_SE + 0.055, gfY, +1, [], sculptedSkirtGFGroup);                      // Hallway side of WIR
+
+                // 2. Master Bed 1 full 4-wall skirting loop
+                runX(X_FRONT_BED1 + gfIn, 11.57, Z_NW + gfIn, gfY, +1, [], sculptedSkirtGFGroup);
+                runZ(Z_NW + gfIn, Z_BED1_SE - 0.05, X_FRONT_BED1 + gfIn, gfY, +1, [], sculptedSkirtGFGroup);
+                runX(X_FRONT_BED1 + gfIn, 11.57, Z_BED1_SE - 0.055, gfY, -1, [[10.70, 11.57]], sculptedSkirtGFGroup);
+                runZ(Z_NW + gfIn, Z_BED1_SE - 0.05, 11.57, gfY, -1, [], sculptedSkirtGFGroup);
+
+                // --- LOWER GROUND SKIRTINGS ---
+                const lgfNW = isRev1 ? (Z_NW + 0.076) : (Z_NW + 0.136);
+                const lgfSE = isRev1 ? (Z_SE - 0.076) : (Z_SE - 0.136);
+                const lgfNE = X_REAR_WALL - 0.136;
+
+                // 1. Middle Kids Rumpus Breakout
+                runX(16.85, lgfNE, -1.70, lgfY, +1, [[17.15, 18.12]], sculptedSkirtLGFGroup);
+                runX(16.85, lgfNE, 1.40, lgfY, -1, [[17.15, 18.12]], sculptedSkirtLGFGroup);
+                runZ(-1.70, 1.40, lgfNE, lgfY, -1, [d13Gap], sculptedSkirtLGFGroup);
+
+                // 2. Kids Bed 3 (NW Lower)
+                runX(16.85, lgfNE, lgfNW, lgfY, +1, [], sculptedSkirtLGFGroup);
+                runX(16.85, lgfNE, -1.80, lgfY, -1, [[17.15, 18.12]], sculptedSkirtLGFGroup);
+                runZ(lgfNW, -1.80, lgfNE, lgfY, -1, [], sculptedSkirtLGFGroup);
+                runZ(lgfNW, -1.80, 16.85, lgfY, +1, [], sculptedSkirtLGFGroup);
+
+                // 3. Kids Bed 4 / Bed 2 (SE Lower)
+                runX(16.85, lgfNE, lgfSE, lgfY, -1, [], sculptedSkirtLGFGroup);
+                runX(16.85, lgfNE, 1.50, lgfY, +1, [[17.15, 18.12]], sculptedSkirtLGFGroup);
+                runZ(1.50, lgfSE, lgfNE, lgfY, -1, [], sculptedSkirtLGFGroup);
+                runZ(1.50, lgfSE, 16.85, lgfY, +1, [], sculptedSkirtLGFGroup);
+            }
+
+            // =========================================================================
+            // 29G. REAL-RELIEF 3D FEATURE WALLS (VJ PANELLING & OAK ACOUSTIC BATTENS)
+            // =========================================================================
+            function add3DFeatureWall({ x0, z0, x1, z1, yBot, yTop, style, cutouts = [], capRail = false }) {
+                const dx = x1 - x0;
+                const dz = z1 - z0;
+                const len = Math.hypot(dx, dz);
+                if (len < 0.1 || yTop <= yBot + 0.05) return;
+
+                const g = new THREE.Group();
+                g.position.set(x0, 0, z0);
+                g.rotation.y = Math.atan2(dx, dz);
+
+                const isBattens = style === 'battens';
+                const backMat = isBattens ? intFinishMats.battenFelt : intFinishMats.vjGroove;
+                const slatMat = isBattens ? intFinishMats.battenOak : intFinishMats.vjBoard;
+                const pitch   = isBattens ? 0.064 : 0.112; // 64mm batten spacing vs 112mm VJ board module
+                const slatW   = isBattens ? 0.032 : 0.100; // 32mm oak batten vs 100mm VJ face (12mm V-groove)
+                const slatD   = isBattens ? 0.022 : 0.011;
+                const backD   = 0.008;
+
+                // Emit vertical segments clipped cleanly around any window cutouts [{ u0, u1, y0, y1 }]
+                const emitVerticalStrip = (uCenter, width, depth, xOff, mat) => {
+                    const segs = [[yBot, yTop]];
+                    cutouts.forEach(c => {
+                        if (uCenter + width / 2 <= c.u0 || uCenter - width / 2 >= c.u1) return;
+                        for (let i = segs.length - 1; i >= 0; i--) {
+                            const [a, b] = segs[i];
+                            if (c.y1 <= a || c.y0 >= b) continue;
+                            segs.splice(i, 1);
+                            if (c.y0 > a + 0.03) segs.push([a, c.y0]);
+                            if (c.y1 < b - 0.03) segs.push([c.y1, b]);
+                        }
+                    });
+                    segs.forEach(([a, b]) => {
+                        const h = b - a;
+                        const m = new THREE.Mesh(new THREE.BoxGeometry(depth, h, width), mat);
+                        m.position.set(xOff, a + h / 2, uCenter);
+                        m.castShadow = isBattens;
+                        m.receiveShadow = true;
+                        g.add(m);
+                    });
+                };
+
+                // Backing layer + protruding vertical VJ boards or acoustic oak battens
+                const count = Math.max(1, Math.floor(len / pitch));
+                const step = len / count;
+                for (let i = 0; i < count; i++) {
+                    const u = (i + 0.5) * step;
+                    emitVerticalStrip(u, step, backD, backD / 2, backMat);
+                    emitVerticalStrip(u, Math.min(slatW, step - 0.008), slatD, backD + slatD / 2, slatMat);
+                }
+
+                // Optional top capping molding (for Dining Booth wainscoting)
+                if (capRail) {
+                    const rail = new THREE.Mesh(
+                        new THREE.BoxGeometry(backD + slatD + 0.014, 0.028, len + 0.01),
+                        isBattens ? intFinishMats.battenOak : materials.interiorTrim
+                    );
+                    rail.position.set((backD + slatD + 0.014) / 2, yTop + 0.014, len / 2);
+                    rail.castShadow = true;
+                    rail.receiveShadow = true;
+                    g.add(rail);
+                }
+
+                featureWallsGroup.add(g);
+            }
+
+            function rebuildFeatureWalls3D() {
+                clearGroup(featureWallsGroup);
+
+                const isRev1 = currentRevision === 1;
+                const gfIn = (isRev1 ? 0.07 : 0.12) + 0.015;
+                const activeCeilY = getActiveGFCeilY();
+                const skirtH = SelectionsState.trimProfile === '90tall' ? 0.090 : (SelectionsState.trimProfile === 'shadowline' ? 0.018 : 0.066);
+                const yStart = Y_GF_FFL + skirtH;
+                const style = InteriorFinishState.featureStyle;
+                const zones = InteriorFinishState.featureZones;
+
+                // 1. Master Bed 1 Bedhead Feature Wall (auto-follows Bed 1 Partition vs Under W02!)
+                if (zones.bed1) {
+                    if (isMasterBedUnderW02()) {
+                        // NW Wall behind bedhead, clipped cleanly around W02 highlight window
+                        const xStart = 11.55;
+                        const xEnd = X_FRONT_BED1 + gfIn + 0.02;
+                        const w2 = OPENING_STATE.W02;
+                        const w2U0 = xStart - (w2.center + w2.width / 2) - 0.04;
+                        const w2U1 = xStart - (w2.center - w2.width / 2) + 0.04;
+                        add3DFeatureWall({
+                            x0: xStart, z0: Z_NW + gfIn,
+                            x1: xEnd,   z1: Z_NW + gfIn,
+                            yBot: yStart, yTop: activeCeilY - 0.01,
+                            style,
+                            cutouts: [{ u0: w2U0, u1: w2U1, y0: Y_GF_FFL + w2.sill - 0.04, y1: Y_GF_FFL + w2.head + 0.04 }]
+                        });
+                    } else {
+                        // Partition Wall (X = 11.56, facing -X into Bed 1)
+                        add3DFeatureWall({
+                            x0: 11.56, z0: Z_BED1_SE - 0.06,
+                            x1: 11.56, z1: Z_NW + gfIn,
+                            yBot: yStart, yTop: activeCeilY - 0.01,
+                            style
+                        });
+                    }
+                }
+
+                // 2. Dining Booth Corner Wainscoting (up to 845mm -> sits cleanly below 860mm W04/W05 sills)
+                if (zones.diningBooth) {
+                    const wainTop = Y_GF_FFL + 0.835;
+                    add3DFeatureWall({
+                        x0: X_REAR_WALL - gfIn, z0: Z_NW + gfIn,
+                        x1: 18.20,              z1: Z_NW + gfIn,
+                        yBot: yStart, yTop: wainTop,
+                        style, capRail: true
+                    });
+                    add3DFeatureWall({
+                        x0: X_REAR_WALL - gfIn, z0: -2.35,
+                        x1: X_REAR_WALL - gfIn, z1: Z_NW + gfIn,
+                        yBot: yStart, yTop: wainTop,
+                        style, capRail: true
+                    });
+                }
+
+                // 3. Living / Family SE TV Feature Wall (X: 17.08..X_REAR_WALL - gfIn, facing -Z)
+                if (zones.livingTv) {
+                    add3DFeatureWall({
+                        x0: 17.08,              z0: Z_SE - gfIn,
+                        x1: X_REAR_WALL - gfIn, z1: Z_SE - gfIn,
+                        yBot: yStart, yTop: activeCeilY - 0.01,
+                        style
+                    });
+                }
+
+                // 4. Entry Hallway Feature Wall (backing onto garage wall Z_SPLIT, facing -Z)
+                if (zones.entryHall) {
+                    add3DFeatureWall({
+                        x0: X_FRONT_ENTRY + gfIn, z0: Z_SPLIT - 0.056,
+                        x1: 13.98,                z1: Z_SPLIT - 0.056,
+                        yBot: yStart, yTop: activeCeilY - 0.01,
+                        style
+                    });
+                }
+            }
+
+            // Master interior surface & geometry sync helper (called by Section 3 controls & hooks)
+            function applyInteriorFinishMaterials() {
+                const cp = CEILING_PAINT_SWATCHES.find(c => c.name === InteriorFinishState.ceilingPaint) || CEILING_PAINT_SWATCHES[0];
+                intFinishMats.ceiling.color.set(cp.hex);
+                intFinishMats.cornice.color.set(cp.hex);
+
+                const fc = FEATURE_WALL_SWATCHES.find(f => f.name === InteriorFinishState.featureColor) || FEATURE_WALL_SWATCHES[1];
+                intFinishMats.vjBoard.color.set(fc.hex);
+                // Automatically derive deeper V-groove shadow tone from selected VJ paint colour
+                const grooveCol = new THREE.Color(fc.hex).multiplyScalar(0.68);
+                intFinishMats.vjGroove.color.copy(grooveCol);
+            }
+
+            function rebuildAllInteriorArchitecture() {
+                applyInteriorFinishMaterials();
+                applyCeilingHeightAndExtensions();
+                rebuildInteriorPlasterShell();
+                rebuildCeilings();
+                rebuildCornices();
+                rebuildSculptedSkirtings();
+                rebuildFeatureWalls3D();
+            }
+
+// =========================================================================
+            // 29H. INJECTED UI CONTROLS INSIDE THE "INTERIOR" TAB
+            // =========================================================================
+            if (Array.isArray(UPGRADE_VALUES.trimProfile) && !UPGRADE_VALUES.trimProfile.includes('shadowline')) {
+                UPGRADE_VALUES.trimProfile.push('shadowline');
+            }
+
+            const tabInterior = document.getElementById('tab-interior');
+            const interiorCards = tabInterior ? tabInterior.querySelectorAll('.section-card') : [];
+            const paintTrimsCard = interiorCards[1] || null; // "Paint, Trims & Hume Doors" card
+
+            // 1. Inject "Ceiling Height & Cornice" Card right above "Paint, Trims & Hume Doors"
+            const ceilCard = document.createElement('div');
+            ceilCard.id = 'interior-ceiling-height-card';
+            ceilCard.className = 'section-card space-y-2';
+            ceilCard.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span class="text-[11px] font-bold text-cyan-300 uppercase tracking-wide">Ceiling Height & Cornice</span>
+                    <button id="int-inspect-inside-btn" class="text-[9px] bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 px-1.5 py-0.5 rounded transition" title="Jump camera inside Living/Dining to inspect walls, ceiling & skirtings">Inspect Inside</button>
+                </div>
+
+                <!-- Ground Floor Ceiling Height 3-Way Selector -->
+                <div>
+                    <div class="flex justify-between text-[10px] text-slate-300 mb-1">
+                        <span>Ground Floor Ceiling</span>
+                        <span id="int-ceil-h-lbl" class="font-mono text-cyan-300">2.40m (STD)</span>
+                    </div>
+                    <div class="grid grid-cols-3 gap-0.5 bg-black/40 p-0.5 rounded-lg" id="int-ceil-h-btns">
+                        <button class="int-ceil-h-btn seg-btn active-std" data-h="2.40">2.40m STD</button>
+                        <button class="int-ceil-h-btn seg-btn" data-h="2.55">2.55m ↑</button>
+                        <button class="int-ceil-h-btn seg-btn" data-h="2.80">2.80m ↑</button>
+                    </div>
+                </div>
+
+                <!-- Optional 2.38m High Door/Window Heads (enabled for 2.55m & 2.80m) -->
+                <label class="flex items-center justify-between text-[10px] text-slate-300 cursor-pointer bg-black/25 px-2 py-1 rounded-lg">
+                    <span>2.38m High Doors & Living Windows ↑</span>
+                    <input id="int-high-head-chk" type="checkbox" disabled class="accent-amber-400 rounded">
+                </label>
+
+                <!-- Ceiling Paint Swatches -->
+                <div>
+                    <div class="flex justify-between text-[10px] text-slate-300 mb-1">
+                        <span>Ceiling Paint (Flat)</span>
+                        <span id="ceilpaint-label" class="text-slate-400">Ceiling White</span>
+                    </div>
+                    <div class="flex gap-1.5 flex-wrap" id="ceilpaint-swatches"></div>
+                </div>
+
+                <!-- Cornice Profile Selector -->
+                <div class="flex items-center justify-between pt-0.5">
+                    <span class="text-[10px] text-slate-300">Cornice Profile</span>
+                    <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                        <button class="int-cornice-btn seg-btn active-std" data-style="squareset">Square STD</button>
+                        <button class="int-cornice-btn seg-btn" data-style="cove90">90mm Cove</button>
+                        <button class="int-cornice-btn seg-btn" data-style="shadowline">Shadow ↑</button>
+                    </div>
+                </div>
+            `;
+
+            if (tabInterior && paintTrimsCard) {
+                tabInterior.insertBefore(ceilCard, paintTrimsCard);
+            }
+
+            // 2. Enhance Existing "Paint, Trims & Hume Doors" Card with Shadowline Skirting, Oak Finish & 3D Feature Walls
+            if (paintTrimsCard) {
+                // Add "Shadow ↑" option to existing Skirting & Architrave segmented bar
+                const tallSkirtBtn = paintTrimsCard.querySelector('[data-key="trimProfile"][data-val="90tall"]');
+                if (tallSkirtBtn && tallSkirtBtn.parentElement && !paintTrimsCard.querySelector('[data-val="shadowline"]')) {
+                    const shadowBtn = document.createElement('button');
+                    shadowBtn.className = 'sel-toggle seg-btn';
+                    shadowBtn.dataset.key = 'trimProfile';
+                    shadowBtn.dataset.val = 'shadowline';
+                    shadowBtn.textContent = 'Shadow ↑';
+                    shadowBtn.addEventListener('click', () => {
+                        markCustomModified();
+                        SelectionsState.trimProfile = 'shadowline';
+                        rebuildSculptedSkirtings();
+                        rebuildFeatureWalls3D();
+                        rebuildDynamicWallsAndOpenings();
+                        syncAllUIFromState();
+                    });
+                    tallSkirtBtn.parentElement.appendChild(shadowBtn);
+                }
+
+                // Hide legacy 2-button Feature VJ row (replaced by full 4-zone 3D Feature Walls panel below)
+                const oldVjBtn = paintTrimsCard.querySelector('[data-key="vjFeature"]');
+                if (oldVjBtn && oldVjBtn.parentElement && oldVjBtn.parentElement.parentElement) {
+                    oldVjBtn.parentElement.parentElement.classList.add('hidden');
+                }
+
+                // Append Skirting Finish + Multi-Zone 3D Feature Walls Controls
+                const extraTrimsBlock = document.createElement('div');
+                extraTrimsBlock.className = 'space-y-2 pt-1.5 border-t border-white/10';
+                extraTrimsBlock.innerHTML = `
+                    <!-- Skirting Finish: Aqua Enamel Trim Paint vs Natural Coastal Oak -->
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] text-slate-300">Skirting Finish</span>
+                        <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                            <button class="int-skirtfin-btn seg-btn active-std" data-fin="paint">Trim Paint</button>
+                            <button class="int-skirtfin-btn seg-btn" data-fin="oak">Coastal Oak ↑</button>
+                        </div>
+                    </div>
+
+                    <!-- 3D Feature Walls (Style, 4 Room Zones & Paint Colour) -->
+                    <div class="space-y-1.5 pt-1.5 border-t border-white/10">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-semibold text-amber-300">3D Feature Walls ↑</span>
+                            <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                                <button class="int-featstyle-btn seg-btn active-sky" data-style="vj">3D VJ Panels</button>
+                                <button class="int-featstyle-btn seg-btn" data-style="battens">Oak Battens ↑</button>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-1 text-[10px]">
+                            <label class="flex items-center gap-1.5 bg-black/30 px-2 py-1 rounded cursor-pointer">
+                                <input type="checkbox" class="int-featzone-chk accent-amber-400" data-zone="bed1">
+                                <span>Bed 1 Bedhead</span>
+                            </label>
+                            <label class="flex items-center gap-1.5 bg-black/30 px-2 py-1 rounded cursor-pointer">
+                                <input type="checkbox" class="int-featzone-chk accent-amber-400" data-zone="diningBooth">
+                                <span>Dining Booth</span>
+                            </label>
+                            <label class="flex items-center gap-1.5 bg-black/30 px-2 py-1 rounded cursor-pointer">
+                                <input type="checkbox" class="int-featzone-chk accent-amber-400" data-zone="livingTv">
+                                <span>Living TV Wall</span>
+                            </label>
+                            <label class="flex items-center gap-1.5 bg-black/30 px-2 py-1 rounded cursor-pointer">
+                                <input type="checkbox" class="int-featzone-chk accent-amber-400" data-zone="entryHall">
+                                <span>Entry Hallway</span>
+                            </label>
+                        </div>
+
+                        <div id="int-featcolor-wrap">
+                            <div class="flex justify-between text-[10px] text-slate-300 mb-1">
+                                <span>VJ Feature Colour</span>
+                                <span id="featcolor-label" class="text-slate-400">Coastal Sage</span>
+                            </div>
+                            <div class="flex gap-1.5 flex-wrap" id="featcolor-swatches"></div>
+                        </div>
+                    </div>
+                `;
+                paintTrimsCard.appendChild(extraTrimsBlock);
+            }
+
+            // Build Ceiling Paint & VJ Feature Wall Swatch Strips
+            buildSwatches('ceilpaint-swatches', 'ceilpaint-label', CEILING_PAINT_SWATCHES, s => {
+                InteriorFinishState.ceilingPaint = s.name;
+                applyInteriorFinishMaterials();
+            }, InteriorFinishState.ceilingPaint);
+
+            buildSwatches('featcolor-swatches', 'featcolor-label', FEATURE_WALL_SWATCHES, s => {
+                InteriorFinishState.featureColor = s.name;
+                applyInteriorFinishMaterials();
+            }, InteriorFinishState.featureColor);
+
+            // =========================================================================
+            // 29I. SYNC UI HELPERS & EVENT LISTENERS
+            // =========================================================================
+            function getActiveFeatureZoneList() {
+                const z = InteriorFinishState.featureZones;
+                const names = [];
+                if (z.bed1) names.push('Bed 1');
+                if (z.diningBooth) names.push('Dining Booth');
+                if (z.livingTv) names.push('Living TV');
+                if (z.entryHall) names.push('Entry Hall');
+                return names;
+            }
+
+            function syncLegacyVjFieldFromZones() {
+                const count = getActiveFeatureZoneList().length;
+                SelectionsState.vjFeature = count > 0 ? 'bedAndBooth' : 'none';
+            }
+
+            function syncInteriorFinishUI() {
+                // Ceiling Height buttons & label
+                const h = InteriorFinishState.ceilingHeight;
+                const hLbl = document.getElementById('int-ceil-h-lbl');
+                if (hLbl) {
+                    hLbl.textContent = h <= 2.41 ? '2.40m (STD)' : `${h.toFixed(2)}m (UPGRADE)`;
+                }
+                document.querySelectorAll('.int-ceil-h-btn').forEach(b => {
+                    const val = parseFloat(b.dataset.h);
+                    const active = Math.abs(val - h) < 0.02;
+                    b.className = 'int-ceil-h-btn seg-btn' + (active ? (val <= 2.41 ? ' active-std' : ' active-upg') : '');
+                });
+
+                // High-Head Openings checkbox
+                const hhChk = document.getElementById('int-high-head-chk');
+                if (hhChk) {
+                    hhChk.disabled = h < 2.54;
+                    hhChk.checked = InteriorFinishState.highHeadOpenings && h >= 2.54;
+                }
+
+                // Cornice buttons
+                document.querySelectorAll('.int-cornice-btn').forEach(b => {
+                    const active = b.dataset.style === InteriorFinishState.corniceStyle;
+                    b.className = 'int-cornice-btn seg-btn' + (active ? (b.dataset.style === 'shadowline' ? ' active-upg' : ' active-std') : '');
+                });
+
+                // Skirting Finish buttons
+                document.querySelectorAll('.int-skirtfin-btn').forEach(b => {
+                    const active = b.dataset.fin === InteriorFinishState.skirtingFinish;
+                    b.className = 'int-skirtfin-btn seg-btn' + (active ? (b.dataset.fin === 'oak' ? ' active-upg' : ' active-std') : '');
+                });
+
+                // Feature Wall Style, Zones & Colour visibility
+                document.querySelectorAll('.int-featstyle-btn').forEach(b => {
+                    const active = b.dataset.style === InteriorFinishState.featureStyle;
+                    b.className = 'int-featstyle-btn seg-btn' + (active ? (b.dataset.style === 'battens' ? ' active-upg' : ' active-sky') : '');
+                });
+                document.querySelectorAll('.int-featzone-chk').forEach(chk => {
+                    chk.checked = Boolean(InteriorFinishState.featureZones[chk.dataset.zone]);
+                });
+                const featColWrap = document.getElementById('int-featcolor-wrap');
+                if (featColWrap) {
+                    featColWrap.classList.toggle('opacity-40', InteriorFinishState.featureStyle === 'battens');
+                }
+
+                // Swatch active states
+                const syncSwatch = (cid, lid, activeName) => {
+                    const el = document.getElementById(cid);
+                    const lbl = document.getElementById(lid);
+                    if (lbl) lbl.textContent = activeName;
+                    if (el) el.querySelectorAll('.swatch-btn').forEach(b => b.classList.toggle('active', b.dataset.name === activeName));
+                };
+                syncSwatch('ceilpaint-swatches', 'ceilpaint-label', InteriorFinishState.ceilingPaint);
+                syncSwatch('featcolor-swatches', 'featcolor-label', InteriorFinishState.featureColor);
+            }
+
+            // Ceiling Height selector events
+            document.querySelectorAll('.int-ceil-h-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    markCustomModified();
+                    const newH = parseFloat(btn.dataset.h);
+                    InteriorFinishState.ceilingHeight = newH;
+
+                    // Update default upgrade estimate dynamically for 2.40m / 2.55m / 2.80m
+                    const estByH = newH >= 2.75 ? 11500 : (newH >= 2.50 ? 4800 : 0);
+                    SelectionsState.upgradeQuotes.ceilingHeight = estByH;
+
+                    if (newH < 2.54 && InteriorFinishState.highHeadOpenings) {
+                        applyHighHeadMode(false);
+                        rebuildDynamicWallsAndOpenings();
+                        populateWindowUI();
+                    }
+                    rebuildAllInteriorArchitecture();
+                    syncInteriorFinishUI();
+                    updateBudgetTelemetry();
+                });
+            });
+
+            // High-Head 2.38m Openings Toggle
+            const highHeadChk = document.getElementById('int-high-head-chk');
+            if (highHeadChk) {
+                highHeadChk.addEventListener('change', (e) => {
+                    markCustomModified();
+                    applyHighHeadMode(e.target.checked);
+                    rebuildDynamicWallsAndOpenings();
+                    rebuildAllInteriorArchitecture();
+                    populateWindowUI();
+                    syncInteriorFinishUI();
+                    updateBudgetTelemetry();
+                });
+            }
+
+            // Cornice Profile Toggle
+            document.querySelectorAll('.int-cornice-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    markCustomModified();
+                    InteriorFinishState.corniceStyle = btn.dataset.style;
+                    if (SelectionsState.upgradeQuotes.corniceStyle === undefined || btn.dataset.style === 'shadowline') {
+                        SelectionsState.upgradeQuotes.corniceStyle = btn.dataset.style === 'shadowline' ? 2600 : 0;
+                    }
+                    rebuildCornices();
+                    syncInteriorFinishUI();
+                    updateBudgetTelemetry();
+                });
+            });
+
+            // Skirting Finish Toggle (Paint vs Coastal Oak)
+            document.querySelectorAll('.int-skirtfin-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    markCustomModified();
+                    InteriorFinishState.skirtingFinish = btn.dataset.fin;
+                    if (SelectionsState.upgradeQuotes.skirtingFinish === undefined) {
+                        SelectionsState.upgradeQuotes.skirtingFinish = 1800;
+                    }
+                    rebuildSculptedSkirtings();
+                    syncInteriorFinishUI();
+                    updateBudgetTelemetry();
+                });
+            });
+
+            // Feature Wall Style & Zone Toggles
+            document.querySelectorAll('.int-featstyle-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    markCustomModified();
+                    InteriorFinishState.featureStyle = btn.dataset.style;
+                    rebuildFeatureWalls3D();
+                    syncInteriorFinishUI();
+                    updateBudgetTelemetry();
+                });
+            });
+
+            document.querySelectorAll('.int-featzone-chk').forEach(chk => {
+                chk.addEventListener('change', () => {
+                    markCustomModified();
+                    InteriorFinishState.featureZones[chk.dataset.zone] = chk.checked;
+                    syncLegacyVjFieldFromZones();
+                    rebuildFeatureWalls3D();
+                    syncInteriorFinishUI();
+                    updateBudgetTelemetry();
+                });
+            });
+
+            // Quick "Inspect Inside" Camera Button
+            const inspectBtn = document.getElementById('int-inspect-inside-btn');
+            if (inspectBtn) {
+                inspectBtn.addEventListener('click', () => {
+                    roofGroup.visible = true;
+                    groundGroup.visible = true;
+                    ceilingGFGroup.visible = true;
+                    corniceGFGroup.visible = true;
+                    flyTo(new THREE.Vector3(15.6, Y_GF_FFL + 1.55, 0.8), new THREE.Vector3(20.6, Y_GF_FFL + 1.45, -2.5));
+                });
+            }
+
+            // Cutaway Mode Sync (hide GF Ceiling & Cornices in "Roof Off" / "Lower Floor" views)
+            ['view-full', 'view-gf', 'view-lgf', 'walk-inside-btn', 'walk-toggle-top'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('click', () => {
+                        setTimeout(() => {
+                            ceilingGFGroup.visible = roofGroup.visible;
+                            corniceGFGroup.visible = roofGroup.visible;
+                        }, 0);
+                    });
+                }
+            });
+
+            // Live Bed 1 Feature Wall Re-Orientation when Master Bed Layout toggles in Section 27
+            ['des-bed-part-btn', 'des-bed-w02-btn'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('click', () => {
+                        setTimeout(() => rebuildFeatureWalls3D(), 0);
+                    });
+                }
+            });
+
+            // =========================================================================
+            // 29J. NON-DESTRUCTIVE WRAPPERS (SHELL, BUDGET TRACKER & JSON PERSISTENCE)
+            // =========================================================================
+            const _prevBuildHouseInt = buildHouse;
+            const _prevRebuildDynInt = rebuildDynamicWallsAndOpenings;
+            const _prevRebuildTrimsInt = rebuildTrimsAndDownpipes;
+            const _prevSyncUIInt = syncAllUIFromState;
+            const _prevGetCatalogInt = getSelectionsCatalog;
+            const _prevCaptureSnapInt = captureSpecSnapshot;
+            const _prevApplySnapInt = applySpecSnapshot;
+            const _prevInitInt = init;
+
+            buildHouse = function() {
+                _prevBuildHouseInt();
+                rebuildAllInteriorArchitecture();
+            };
+
+            rebuildDynamicWallsAndOpenings = function() {
+                _prevRebuildDynInt();
+                rebuildInteriorPlasterShell();
+                rebuildSculptedSkirtings();
+                rebuildFeatureWalls3D();
+            };
+
+            rebuildTrimsAndDownpipes = function() {
+                _prevRebuildTrimsInt();
+                rebuildSculptedSkirtings();
+                rebuildFeatureWalls3D();
+                applyCeilingHeightAndExtensions();
+            };
+
+            syncAllUIFromState = function() {
+                _prevSyncUIInt();
+                syncInteriorFinishUI();
+            };
+
+            getSelectionsCatalog = function() {
+                const list = _prevGetCatalogInt();
+                const paintIdx = list.findIndex(r => r.item === 'Interior 3-Coat Paint System');
+                const skirtIdx = list.findIndex(r => r.item === 'Skirting & Architrave Profile');
+                const vjIdx = list.findIndex(r => r.item === 'Feature VJ Wall Panelling');
+
+                // 1. Update Interior Paint row to show Walls + Ceiling + Trim paints
+                if (paintIdx >= 0) {
+                    list[paintIdx].selection = `Walls: ${SelectionsState.wallPaint} • Ceiling: ${InteriorFinishState.ceilingPaint} • Trims: ${SelectionsState.trimPaint}`;
+                }
+
+                // 2. Update Skirting row to include Shadowline & Coastal Oak Finish
+                if (skirtIdx >= 0) {
+                    const profLabels = {
+                        '66dar': '66mm × 18mm DAR Square',
+                        '66splay': '66mm × 18mm Half-Splayed',
+                        '90tall': '90mm × 18mm Architectural Tall',
+                        'shadowline': '16mm Recessed Shadowline Skirting'
+                    };
+                    const profName = profLabels[SelectionsState.trimProfile] || SelectionsState.trimProfile;
+                    const finName = SelectionsState.trimProfile === 'shadowline'
+                        ? 'Flush Plaster Shadow Gap'
+                        : (InteriorFinishState.skirtingFinish === 'oak' ? 'Natural Coastal Oak' : `Aqua Enamel (${SelectionsState.trimPaint})`);
+                    const isSkirtUpg = SelectionsState.trimProfile === '90tall' || SelectionsState.trimProfile === 'shadowline' || InteriorFinishState.skirtingFinish === 'oak';
+                    list[skirtIdx].selection = `${profName} — ${finName}`;
+                    list[skirtIdx].status = isSkirtUpg ? 'UPGRADE' : 'STD';
+                    list[skirtIdx].costKey = isSkirtUpg ? 'trimProfile' : null;
+                }
+
+                // 3. Update Feature Wall row with active 3D zones & style
+                const activeZones = getActiveFeatureZoneList();
+                if (vjIdx >= 0) {
+                    const styleLabel = InteriorFinishState.featureStyle === 'battens'
+                        ? 'Natural Oak Acoustic Battens (Over Charcoal Felt)'
+                        : `3D V-Groove VJ Panelling (${InteriorFinishState.featureColor})`;
+                    list[vjIdx] = {
+                        trade: '4. Paint, Doors & Trims',
+                        item: '3D Feature Walls',
+                        selection: activeZones.length > 0 ? `${styleLabel} — ${activeZones.join(', ')}` : 'Standard Plasterboard Walls (None)',
+                        status: activeZones.length > 0 ? 'UPGRADE' : 'STD',
+                        costKey: activeZones.length > 0 ? 'vjFeature' : null,
+                        notes: 'True-relief interior feature walls clipped around windows & skirtings.'
+                    };
+                }
+
+                // 4. Insert Ceiling Height & Cornice rows under Paint, Doors & Trims
+                const h = InteriorFinishState.ceilingHeight;
+                const isHighCeil = h > 2.41;
+                if (SelectionsState.upgradeQuotes.ceilingHeight === undefined) {
+                    SelectionsState.upgradeQuotes.ceilingHeight = h >= 2.75 ? 11500 : (h >= 2.50 ? 4800 : 0);
+                }
+                const ceilRow = {
+                    trade: '4. Paint, Doors & Trims',
+                    item: 'Ground Floor Ceiling Height',
+                    selection: `${h.toFixed(2)}m Flat Gyprock Ceiling` + (InteriorFinishState.highHeadOpenings ? ' + 2.38m High Doors/Windows' : ' (2.15m Window Heads)'),
+                    status: isHighCeil ? 'UPGRADE' : 'STD',
+                    costKey: isHighCeil ? 'ceilingHeight' : null,
+                    notes: 'Lower Ground remains 2.45m; Ridge RL adjusts automatically across Rev 1–4.'
+                };
+
+                const corniceNames = {
+                    squareset: 'Square-Set Ceiling Cornice (STD)',
+                    cove90: '90mm Concave Cove Cornice',
+                    shadowline: 'P50 Recessed Shadowline Cornice'
+                };
+                const isCorniceUpg = InteriorFinishState.corniceStyle === 'shadowline';
+                if (SelectionsState.upgradeQuotes.corniceStyle === undefined) {
+                    SelectionsState.upgradeQuotes.corniceStyle = isCorniceUpg ? 2600 : 0;
+                }
+                const corniceRow = {
+                    trade: '4. Paint, Doors & Trims',
+                    item: 'Ceiling Cornice Profile',
+                    selection: corniceNames[InteriorFinishState.corniceStyle] || 'Square-Set',
+                    status: isCorniceUpg ? 'UPGRADE' : 'STD',
+                    costKey: isCorniceUpg ? 'corniceStyle' : null,
+                    notes: 'Applied throughout Ground & Lower Ground habitable rooms.'
+                };
+
+                const insertAt = paintIdx >= 0 ? paintIdx + 1 : list.length;
+                list.splice(insertAt, 0, ceilRow, corniceRow);
+                return list;
+            };
+
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureSnapInt();
+                snap.interiorFinish = {
+                    ...InteriorFinishState,
+                    featureZones: { ...InteriorFinishState.featureZones }
+                };
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                if (snap && snap.interiorFinish) {
+                    Object.assign(InteriorFinishState, snap.interiorFinish);
+                    if (snap.interiorFinish.featureZones) {
+                        InteriorFinishState.featureZones = { ...InteriorFinishState.featureZones, ...snap.interiorFinish.featureZones };
+                    }
+                } else {
+                    // Smart bridge for older JSONs (like MY_DEFAULT_SPEC) & 100% STD Blink Test
+                    InteriorFinishState.ceilingHeight = 2.40;
+                    InteriorFinishState.highHeadOpenings = false;
+                    InteriorFinishState.ceilingPaint = 'Ceiling White';
+                    InteriorFinishState.corniceStyle = 'squareset';
+                    InteriorFinishState.skirtingFinish = 'paint';
+                    InteriorFinishState.featureStyle = 'vj';
+                    InteriorFinishState.featureColor = 'Coastal Sage';
+                    const hasLegacyVj = Boolean(snap && snap.selections && snap.selections.vjFeature === 'bedAndBooth');
+                    InteriorFinishState.featureZones = {
+                        bed1: hasLegacyVj,
+                        diningBooth: hasLegacyVj,
+                        livingTv: false,
+                        entryHall: false
+                    };
+                }
+                _prevApplySnapInt(snap, preserveQuotes);
+                rebuildAllInteriorArchitecture();
+                syncInteriorFinishUI();
+            };
+
+            init = function() {
+                SelectionsState.upgradeQuotes.ceilingHeight = 0;
+                SelectionsState.upgradeQuotes.corniceStyle = 0;
+                _prevInitInt();
+                // Mirror legacy vjFeature flag if startup default loaded one without interiorFinish
+                if (SelectionsState.vjFeature === 'bedAndBooth' && getActiveFeatureZoneList().length === 0) {
+                    InteriorFinishState.featureZones.bed1 = true;
+                    InteriorFinishState.featureZones.diningBooth = true;
+                }
+                rebuildAllInteriorArchitecture();
+                syncInteriorFinishUI();
+                updateBudgetTelemetry();
+            };
+        })();
+
+        // =========================================================================
+        // 30. DROP-IN MODULE: CINEMATIC FLYBY & INTERIOR WALKTHROUGH TOUR MODE
+        // Paste Sections 1 + 2 immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initCinemaWalkthroughPlugin() {
+            const CinemaState = {
+                active: false,
+                playing: true,
+                loop: true,
+                speed: 1.0,
+                time: 0,
+                totalDuration: 1,
+                currentPoiId: 'flyby-front',
+                draggingLook: false,
+                lastMouseX: 0,
+                lastMouseY: 0,
+                userYawOffset: 0,
+                userPitchOffset: 0,
+                savedDoorOpen: {},
+                activeDoorQuant: { D01: -1, D07: -1, D13: -1 },
+                savedVisibility: null
+            };
+
+            // Eye height helpers (dynamically match house datum levels)
+            const Y_GF_STAND  = Y_GF_FFL + 1.60;   // 4.735m
+            const Y_GF_SIT    = Y_GF_FFL + 1.14;   // 4.275m (Booth & Upstairs Couch)
+            const Y_BALC_EYE  = Y_GF_FFL + 1.54;   // 4.675m (Balcony Deck -0.06m)
+            const Y_MID_EYE   = ((Y_LGF_SSL + Y_GF_FFL) / 2) + 1.54; // 3.270m (Stair Mid-Landing)
+            const Y_LGF_STAND = Y_LGF_SSL + 1.58;  // 1.905m
+            const Y_LGF_SIT   = Y_LGF_SSL + 1.08;  // 1.405m (Downstairs Rumpus Couch)
+
+            // 15 Clickable Points of Interest (rendered as markers along the progress bar)
+            const CINEMA_POIS = [
+                { id: 'flyby-front',   short: 'Front',      title: 'Street Front Flyby (SW)',                     posture: 'AERIAL' },
+                { id: 'flyby-sides',   short: 'Exterior',   title: '360° Exterior Flyby (NW • Rear • SE)',        posture: 'AERIAL' },
+                { id: 'front-entry',   short: 'Entry',      title: 'Front Porch & Entry Hallway (D01)',           posture: 'WALKING' },
+                { id: 'master-bed',    short: 'Bed 1',      title: 'Master Bedroom (W01 / 1.A–1.C & W02)',        posture: 'WALKING' },
+                { id: 'ensuite',       short: 'Ensuite',    title: 'Master Ensuite & Timberline Vanity',          posture: 'STANDING' },
+                { id: 'kitchen-tap',   short: 'Kitchen',    title: 'Standing at Kitchen Tap & Island',            posture: 'STANDING' },
+                { id: 'dining-booth',  short: 'Booth',      title: 'Seated at Corner Dining Booth (W04 & W05)',   posture: 'SEATED' },
+                { id: 'living-couch',  short: 'Couch GF',   title: 'Seated on Upstairs Living Couch',             posture: 'SEATED' },
+                { id: 'balcony',       short: 'Balcony',    title: 'Rear Alfresco Balcony & BBQ Deck (D07)',      posture: 'WALKING' },
+                { id: 'stairwell',     short: 'Stairs',     title: 'Descending U-Stairwell (W09 Mid-Landing)',    posture: 'WALKING' },
+                { id: 'rumpus-couch',  short: 'Couch LGF',  title: 'Seated on Downstairs Rumpus Couch',           posture: 'SEATED' },
+                { id: 'kids-bed3',     short: 'Bed 3',      title: 'Lower Kids Bedroom 3 (NW • W07)',             posture: 'WALKING' },
+                { id: 'bath-laundry',  short: 'Bath/L\'dry',title: 'Lower Combined Bathroom & Laundry (D10)',     posture: 'STANDING' },
+                { id: 'kids-bed4',     short: 'Bed 4',      title: 'Lower Kids Bedroom 4 (SE • W08)',             posture: 'WALKING' },
+                { id: 'loop-exit',     short: 'Loop Out',   title: 'Exit Rear Yard & Loop Back to Street',        posture: 'AERIAL' }
+            ];
+
+            // Choreographed Keyframe Sequence (dur = seconds to arrive at THIS keyframe from the previous one)
+            // move: 'curve' uses Catmull-Rom spline for sweeping flybys; 'linear' uses smootherstep for precision indoor walks/seating
+            const RAW_KEYFRAMES = [
+                // --- 1. EXTERIOR 360° CINEMATIC FLYBY ---
+                { poi: 'flyby-front',  dur: 0.0, move: 'curve',  pos: [-11.5, 8.6, 12.2],           look: [12.5, 4.3, -0.2] },
+                { poi: 'flyby-front',  dur: 4.5, move: 'curve',  pos: [-6.5, 7.0, -9.5],            look: [12.8, 4.4, -1.5] },
+                { poi: 'flyby-sides',  dur: 5.0, move: 'curve',  pos: [15.5, 8.2, -19.0],           look: [16.5, 3.8, -1.5] },
+                { poi: 'flyby-sides',  dur: 5.5, move: 'curve',  pos: [33.5, 8.8, -7.0],            look: [19.5, 3.4, 0.0] },
+                { poi: 'flyby-sides',  dur: 5.0, move: 'curve',  pos: [31.5, 7.6, 13.5],            look: [18.5, 3.4, 0.5] },
+                { poi: 'flyby-sides',  dur: 5.0, move: 'curve',  pos: [11.5, 8.4, 18.0],            look: [13.5, 4.2, 0.5] },
+
+                // --- 2. GLIDE TO FRONT PORCH & ENTER FRONT DOOR D01 ---
+                { poi: 'front-entry',  dur: 4.8, move: 'linear', pos: [4.2, Y_GF_STAND + 0.1, 0.2], look: [9.4, Y_GF_STAND - 0.15, -0.07], doors: { D01: 0 } },
+                { poi: 'front-entry',  dur: 2.6, move: 'linear', pos: [8.0, Y_GF_STAND - 0.05, -0.07], look: [12.5, Y_GF_STAND - 0.1, -0.07], doors: { D01: 85 } },
+                { poi: 'front-entry',  dur: 2.8, move: 'linear', pos: [10.65, Y_GF_STAND, -0.07],   look: [16.5, Y_GF_STAND - 0.15, -0.8], doors: { D01: 85 } },
+
+                // --- 3. MASTER BEDROOM 1 (FRONT TRIPLE / W01 & SIDE HIGHLIGHT W02) ---
+                { poi: 'master-bed',   dur: 2.4, move: 'linear', pos: [10.45, Y_GF_STAND, -0.85],   look: [9.2, Y_GF_STAND - 0.2, -3.2],   doors: { D01: 0 } },
+                { poi: 'master-bed',   dur: 2.2, move: 'linear', pos: [10.15, Y_GF_STAND, -1.55],   look: [8.0, Y_GF_STAND - 0.2, -2.86] },
+                { poi: 'master-bed',   dur: 2.8, move: 'linear', pos: [10.15, Y_GF_STAND, -1.55],   look: [9.85, Y_GF_STAND + 0.1, -4.88] },
+                { poi: 'master-bed',   dur: 2.4, move: 'linear', pos: [10.15, Y_GF_STAND, -1.55],   look: [11.55, Y_GF_STAND - 0.25, -2.75] },
+
+                // --- 4. ENSUITE (SOFT DOORWAY BRIDGE THROUGH WIR PARTITION) ---
+                { poi: 'ensuite',      dur: 1.4, move: 'linear', pos: [13.05, Y_GF_STAND, -3.62],   look: [13.95, Y_GF_STAND - 0.3, -3.68], fade: true },
+                { poi: 'ensuite',      dur: 2.6, move: 'linear', pos: [13.05, Y_GF_STAND, -3.62],   look: [13.09, Y_GF_STAND + 0.05, -4.88] },
+                { poi: 'ensuite',      dur: 2.6, move: 'linear', pos: [13.05, Y_GF_STAND, -3.62],   look: [11.95, Y_GF_STAND - 0.2, -3.05] },
+
+                // --- 5. STAND AT THE KITCHEN TAP & LOOK ACROSS ISLAND ---
+                { poi: 'kitchen-tap',  dur: 1.6, move: 'linear', pos: [15.45, Y_GF_STAND, -0.60],   look: [16.6, Y_GF_STAND - 0.35, -2.18], fade: true },
+                { poi: 'kitchen-tap',  dur: 2.6, move: 'linear', pos: [15.62, Y_GF_STAND, -2.18],   look: [16.78, Y_GF_FFL + 1.05, -2.18] }, // Look right down at sink & gooseneck tap
+                { poi: 'kitchen-tap',  dur: 2.6, move: 'linear', pos: [15.62, Y_GF_STAND, -2.18],   look: [19.8, Y_GF_STAND - 0.2, -3.45] },  // Lift gaze to Dining Booth & W04/W05
+                { poi: 'kitchen-tap',  dur: 2.6, move: 'linear', pos: [15.62, Y_GF_STAND, -2.18],   look: [22.2, Y_GF_STAND - 0.15, 0.2] },   // Pan across Balcony & Living
+                { poi: 'kitchen-tap',  dur: 2.0, move: 'linear', pos: [15.62, Y_GF_STAND, -2.18],   look: [15.8, Y_GF_FFL + 1.25, -4.55] },   // Glance at NW espresso bench & splashback
+
+                // --- 6. WALK TO & SIT AT THE CORNER DINING BOOTH (LOOK OUT W04 & W05) ---
+                { poi: 'dining-booth', dur: 3.0, move: 'linear', pos: [18.15, Y_GF_STAND, -2.15],   look: [19.8, Y_GF_FFL + 1.15, -3.75] },
+                { poi: 'dining-booth', dur: 2.8, move: 'linear', pos: [19.82, Y_GF_SIT + 0.04, -4.32], look: [19.62, Y_GF_FFL + 0.95, -3.15] }, // Sit down on NW booth cushion
+                { poi: 'dining-booth', dur: 3.0, move: 'linear', pos: [19.82, Y_GF_SIT + 0.04, -4.32], look: [25.0, Y_GF_SIT + 0.12, -3.55] },  // Look out Rear NE window W05
+                { poi: 'dining-booth', dur: 3.2, move: 'linear', pos: [19.82, Y_GF_SIT + 0.04, -4.32], look: [19.48, Y_GF_SIT + 0.22, -9.8] },  // Look out NW corner window W04
+                { poi: 'dining-booth', dur: 2.8, move: 'linear', pos: [19.82, Y_GF_SIT + 0.04, -4.32], look: [16.8, Y_GF_SIT + 0.15, -1.2] },   // Look back across Kitchen Island & Living
+
+                // --- 7. WALK TO & SIT ON UPSTAIRS LIVING COUCH ---
+                { poi: 'living-couch', dur: 3.2, move: 'linear', pos: [18.55, Y_GF_STAND, -0.35],   look: [19.2, Y_GF_FFL + 1.2, 2.8] },
+                { poi: 'living-couch', dur: 2.8, move: 'linear', pos: [19.12, Y_GF_SIT, 1.65],      look: [19.12, Y_GF_FFL + 1.05, 4.44] },  // Seated facing 65" TV & SE Feature Wall
+                { poi: 'living-couch', dur: 2.8, move: 'linear', pos: [19.12, Y_GF_SIT, 1.65],      look: [24.8, Y_GF_SIT + 0.1, 3.18] },    // Look out Rear Living Window W06
+                { poi: 'living-couch', dur: 2.8, move: 'linear', pos: [19.12, Y_GF_SIT, 1.65],      look: [24.8, Y_GF_SIT + 0.1, -0.25] },   // Look out Balcony Doors D07
+                { poi: 'living-couch', dur: 2.2, move: 'linear', pos: [19.12, Y_GF_SIT, 1.65],      look: [16.6, Y_GF_SIT + 0.15, -2.0] },   // Glance back to Kitchen
+
+                // --- 8. STEP OUT ONTO REAR BALCONY / ALFRESCO (OPEN D07) ---
+                { poi: 'balcony',      dur: 2.6, move: 'linear', pos: [20.35, Y_GF_STAND, -0.15],   look: [24.5, Y_BALC_EYE - 0.1, -0.15], doors: { D07: 85 } },
+                { poi: 'balcony',      dur: 3.0, move: 'linear', pos: [22.70, Y_BALC_EYE, -0.15],   look: [29.0, Y_BALC_EYE - 0.5, -1.8],  doors: { D07: 85 } },
+                { poi: 'balcony',      dur: 2.8, move: 'linear', pos: [22.70, Y_BALC_EYE, -0.15],   look: [22.26, Y_GF_FFL + 0.9, -2.25],  doors: { D07: 85 } }, // Hooded BBQ
+                { poi: 'balcony',      dur: 3.0, move: 'linear', pos: [22.70, Y_BALC_EYE, -0.15],   look: [22.75, Y_GF_FFL + 0.8, 2.05],   doors: { D07: 85 } }, // Outdoor Lounge
+                { poi: 'balcony',      dur: 2.8, move: 'linear', pos: [20.15, Y_GF_STAND, -0.10],   look: [16.0, Y_GF_STAND - 0.25, 1.0],  doors: { D07: 85 } },
+
+                // --- 9. DESCEND U-SHAPED STAIRWELL (TOP -> MID-LANDING W09 -> LOWER GROUND) ---
+                { poi: 'stairwell',    dur: 3.4, move: 'linear', pos: [15.54, Y_GF_STAND, 1.25],    look: [15.54, Y_GF_FFL + 0.6, 3.85],   doors: { D07: 0 } },
+                { poi: 'stairwell',    dur: 3.2, move: 'linear', pos: [15.54, Y_MID_EYE, 3.85],     look: [16.04, Y_MID_EYE + 0.35, 4.65] }, // Mid-landing glance at Stairwell Window W09
+                { poi: 'stairwell',    dur: 2.2, move: 'linear', pos: [16.51, Y_MID_EYE, 3.85],     look: [16.51, Y_LGF_SSL + 1.2, 1.35] },  // Turn U-bend onto lower flight
+                { poi: 'stairwell',    dur: 3.2, move: 'linear', pos: [16.51, Y_LGF_STAND, 1.25],   look: [19.4, Y_LGF_STAND - 0.1, -0.15] },// Arrive on Lower Ground Floor
+
+                // --- 10. SIT ON DOWNSTAIRS RUMPUS COUCH ---
+                { poi: 'rumpus-couch', dur: 2.8, move: 'linear', pos: [18.45, Y_LGF_STAND, -0.15],  look: [19.5, Y_LGF_SSL + 0.9, 0.85] },
+                { poi: 'rumpus-couch', dur: 2.6, move: 'linear', pos: [19.48, Y_LGF_SIT, 0.88],     look: [19.48, Y_LGF_SSL + 0.95, -1.65] },// Seated looking at Rumpus TV
+                { poi: 'rumpus-couch', dur: 3.0, move: 'linear', pos: [19.48, Y_LGF_SIT, 0.88],     look: [25.0, Y_LGF_SIT + 0.15, -0.15] }, // Pan out Sliding Door D13 to backyard
+                { poi: 'rumpus-couch', dur: 2.2, move: 'linear', pos: [19.48, Y_LGF_SIT, 0.88],     look: [17.0, Y_LGF_SIT + 0.2, -0.8] },
+
+                // --- 11. LOWER KIDS BEDROOM 3 (NW LOWER • W07) ---
+                { poi: 'kids-bed3',    dur: 2.6, move: 'linear', pos: [17.63, Y_LGF_STAND, -1.25],  look: [18.5, Y_LGF_STAND - 0.2, -3.2] },
+                { poi: 'kids-bed3',    dur: 2.2, move: 'linear', pos: [18.10, Y_LGF_STAND, -2.95],  look: [19.8, Y_LGF_SSL + 1.15, -4.15] }, // Bunk Bed
+                { poi: 'kids-bed3',    dur: 2.6, move: 'linear', pos: [18.10, Y_LGF_STAND, -2.95],  look: [24.5, Y_LGF_STAND - 0.1, -3.18] },// Look out Window W07
+                { poi: 'kids-bed3',    dur: 2.2, move: 'linear', pos: [17.63, Y_LGF_STAND, -1.25],  look: [16.1, Y_LGF_STAND - 0.15, -2.8] },
+
+                // --- 12. LOWER COMBINED BATHROOM & LAUNDRY (D10) ---
+                { poi: 'bath-laundry', dur: 2.6, move: 'linear', pos: [16.18, Y_LGF_STAND, -2.90],  look: [15.10, Y_LGF_SSL + 1.25, -3.76] },// Timberline Vanity & Mirror
+                { poi: 'bath-laundry', dur: 2.6, move: 'linear', pos: [16.18, Y_LGF_STAND, -2.90],  look: [15.20, Y_LGF_SSL + 1.35, -4.45] },// Stacked Washer/Dryer & D10
+                { poi: 'bath-laundry', dur: 2.4, move: 'linear', pos: [16.18, Y_LGF_STAND, -2.90],  look: [15.25, Y_LGF_SSL + 1.30, -2.25] },// Corner Shower
+                { poi: 'bath-laundry', dur: 2.2, move: 'linear', pos: [16.65, Y_LGF_STAND, -0.65],  look: [17.63, Y_LGF_STAND - 0.1, 2.2] },
+
+                // --- 13. LOWER KIDS BEDROOM 4 (SE LOWER • W08) ---
+                { poi: 'kids-bed4',    dur: 2.6, move: 'linear', pos: [17.63, Y_LGF_STAND, 1.05],   look: [18.6, Y_LGF_STAND - 0.15, 2.95] },
+                { poi: 'kids-bed4',    dur: 2.2, move: 'linear', pos: [18.10, Y_LGF_STAND, 2.85],   look: [19.8, Y_LGF_SSL + 1.15, 3.85] },  // Bunk Bed
+                { poi: 'kids-bed4',    dur: 2.6, move: 'linear', pos: [18.10, Y_LGF_STAND, 2.85],   look: [24.5, Y_LGF_STAND - 0.1, 2.88] }, // Look out Window W08
+                { poi: 'kids-bed4',    dur: 2.2, move: 'linear', pos: [17.63, Y_LGF_STAND, 0.95],   look: [21.4, Y_LGF_STAND - 0.1, -0.15] },
+
+                // --- 14. EXIT THROUGH RUMPUS SLIDER D13 & LOOP BACK TO START ---
+                { poi: 'loop-exit',    dur: 2.8, move: 'linear', pos: [20.25, Y_LGF_STAND, -0.15],  look: [24.8, Y_LGF_STAND, -0.15],      doors: { D13: 85 } },
+                { poi: 'loop-exit',    dur: 3.2, move: 'curve',  pos: [24.2, Y_LGF_STAND + 0.35, -0.15], look: [21.0, 3.6, 0.0],           doors: { D13: 85 } },
+                { poi: 'loop-exit',    dur: 4.5, move: 'curve',  pos: [29.5, 6.8, 12.5],            look: [18.0, 3.6, 0.0],              doors: { D13: 0 } },
+                { poi: 'loop-exit',    dur: 4.8, move: 'curve',  pos: [12.5, 9.6, 20.5],            look: [14.0, 4.2, 0.0] },
+                { poi: 'loop-exit',    dur: 5.0, move: 'curve',  pos: [-11.5, 8.6, 12.2],           look: [12.5, 4.3, -0.2] }              // Exact seamless match to Keyframe 0!
+            ];
+
+            // Precompute cumulative timestamps & POI start times
+            const TIMELINE = [];
+            const POI_START_TIMES = {};
+            let accTime = 0;
+            RAW_KEYFRAMES.forEach((kf, idx) => {
+                accTime += kf.dur;
+                const entry = {
+                    idx,
+                    t: accTime,
+                    dur: kf.dur,
+                    poi: kf.poi,
+                    move: kf.move || 'linear',
+                    pos: new THREE.Vector3(...kf.pos),
+                    look: new THREE.Vector3(...kf.look),
+                    doors: kf.doors || null,
+                    fade: Boolean(kf.fade)
+                };
+                TIMELINE.push(entry);
+                if (POI_START_TIMES[kf.poi] === undefined) {
+                    POI_START_TIMES[kf.poi] = accTime;
+                }
+            });
+            CinemaState.totalDuration = Math.max(1, accTime);
+
+            // Smootherstep (zero acceleration at segment starts/stops)
+            function smootherstep(u) {
+                const x = THREE.MathUtils.clamp(u, 0, 1);
+                return x * x * x * (x * (x * 6 - 15) + 10);
+            }
+
+            // Catmull-Rom interpolation helper for 3D vectors
+            function catmullRomVec3(p0, p1, p2, p3, t, out) {
+                const t2 = t * t, t3 = t2 * t;
+                const f = (v0, v1, v2, v3) => 0.5 * (
+                    (2 * v1) +
+                    (-v0 + v2) * t +
+                    (2 * v0 - 5 * v1 + 4 * v2 - v3) * t2 +
+                    (-v0 + 3 * v1 - 3 * v2 + v3) * t3
+                );
+                out.set(
+                    f(p0.x, p1.x, p2.x, p3.x),
+                    f(p0.y, p1.y, p2.y, p3.y),
+                    f(p0.z, p1.z, p2.z, p3.z)
+                );
+                return out;
+            }
+
+            // Smoothly open/close D01, D07, D13 along the route (quantized to prevent redundant mesh rebuilds)
+            function syncCinemaDoors(targetMap) {
+                let changed = false;
+                ['D01', 'D07', 'D13'].forEach(id => {
+                    const o = OPENING_STATE[id];
+                    if (!o) return;
+                    const desired = targetMap[id] ?? 0;
+                    const quant = desired >= 75 ? 85 : (desired <= 5 ? 0 : Math.round(desired / 15) * 15);
+                    if (CinemaState.activeDoorQuant[id] !== quant) {
+                        CinemaState.activeDoorQuant[id] = quant;
+                        o.openPct = quant;
+                        changed = true;
+                    }
+                });
+                if (changed) {
+                    rebuildDynamicWallsAndOpenings();
+                }
+            }
+
+            // Evaluate camera position, lookAt, doorway state, and fade veil at any timestamp `t`
+            const _tmpPos = new THREE.Vector3();
+            const _tmpLook = new THREE.Vector3();
+            const _tmpDir = new THREE.Vector3();
+            const _tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+            function evaluateCinemaFrame(t) {
+                const clampedT = THREE.MathUtils.clamp(t, 0, CinemaState.totalDuration);
+                let i = 0;
+                while (i < TIMELINE.length - 2 && TIMELINE[i + 1].t < clampedT) {
+                    i++;
+                }
+                const k1 = TIMELINE[i];
+                const k2 = TIMELINE[i + 1];
+                const span = Math.max(0.001, k2.t - k1.t);
+                const rawU = THREE.MathUtils.clamp((clampedT - k1.t) / span, 0, 1);
+                const easeU = smootherstep(rawU);
+
+                // Position: Catmull-Rom for exterior aerial flyby curves, smootherstep for precision indoor walks/seating
+                if (k1.move === 'curve' && k2.move === 'curve') {
+                    const k0 = TIMELINE[Math.max(0, i - 1)];
+                    const k3 = TIMELINE[Math.min(TIMELINE.length - 1, i + 2)];
+                    const p0 = k0.move === 'curve' ? k0.pos : k1.pos;
+                    const p3 = k3.move === 'curve' ? k3.pos : k2.pos;
+                    catmullRomVec3(p0, k1.pos, k2.pos, p3, rawU, _tmpPos);
+                } else {
+                    _tmpPos.lerpVectors(k1.pos, k2.pos, easeU);
+                }
+
+                // Look target: always silky smootherstep
+                _tmpLook.lerpVectors(k1.look, k2.look, easeU);
+
+                // Apply camera transform + optional user mouse-drag look offset
+                camera.position.copy(_tmpPos);
+                camera.lookAt(_tmpLook);
+
+                if (Math.abs(CinemaState.userYawOffset) > 0.0005 || Math.abs(CinemaState.userPitchOffset) > 0.0005) {
+                    _tmpEuler.setFromQuaternion(camera.quaternion, 'YXZ');
+                    _tmpEuler.y += CinemaState.userYawOffset;
+                    _tmpEuler.x = THREE.MathUtils.clamp(_tmpEuler.x + CinemaState.userPitchOffset, -1.25, 1.25);
+                    _tmpEuler.z = 0;
+                    camera.quaternion.setFromEuler(_tmpEuler);
+                }
+
+                // Soft doorway fade veil strictly for the brief un-cut WIR/Ensuite transition
+                const veil = document.getElementById('cinema-fade-veil');
+                if (veil) {
+                    const op = k2.fade ? Math.pow(Math.sin(rawU * Math.PI), 1.6) * 0.85 : 0;
+                    veil.style.opacity = op.toFixed(3);
+                }
+
+                // Door interpolation (D01, D07, D13)
+                const doorTargets = { D01: 0, D07: 0, D13: 0 };
+                ['D01', 'D07', 'D13'].forEach(id => {
+                    const v1 = (k1.doors && k1.doors[id] !== undefined) ? k1.doors[id] : 0;
+                    const v2 = (k2.doors && k2.doors[id] !== undefined) ? k2.doors[id] : v1;
+                    doorTargets[id] = THREE.MathUtils.lerp(v1, v2, rawU);
+                });
+                syncCinemaDoors(doorTargets);
+
+                // Active POI tracking
+                CinemaState.currentPoiId = rawU > 0.15 ? k2.poi : k1.poi;
+            }
+
+            // Per-frame Cinema Tour Updater (called from Section 2's animate() hook)
+            function updateCinemaTour(dt) {
+                if (CinemaState.playing) {
+                    CinemaState.time += dt * CinemaState.speed;
+                    if (CinemaState.time >= CinemaState.totalDuration) {
+                        if (CinemaState.loop) {
+                            CinemaState.time = CinemaState.time % CinemaState.totalDuration;
+                        } else {
+                            CinemaState.time = CinemaState.totalDuration;
+                            CinemaState.playing = false;
+                            if (typeof syncCinemaHUD === 'function') syncCinemaHUD();
+                        }
+                    }
+                    // Gently relax temporary manual look-around offset back to choreography while playing
+                    if (!CinemaState.draggingLook) {
+                        const decay = Math.exp(-dt * 2.4);
+                        CinemaState.userYawOffset *= decay;
+                        CinemaState.userPitchOffset *= decay;
+                    }
+                }
+                evaluateCinemaFrame(CinemaState.time);
+                if (typeof syncCinemaProgressUI === 'function') syncCinemaProgressUI();
+            }
+
+            // Allow click-and-drag manual look-around during Cinema Mode (works while playing OR paused!)
+            renderer.domElement.addEventListener('mousedown', (e) => {
+                if (!CinemaState.active) return;
+                CinemaState.draggingLook = true;
+                CinemaState.lastMouseX = e.clientX;
+                CinemaState.lastMouseY = e.clientY;
+            });
+            window.addEventListener('mouseup', () => { CinemaState.draggingLook = false; });
+            window.addEventListener('mousemove', (e) => {
+                if (!CinemaState.active || !CinemaState.draggingLook) return;
+                const dx = e.clientX - CinemaState.lastMouseX;
+                const dy = e.clientY - CinemaState.lastMouseY;
+                CinemaState.lastMouseX = e.clientX;
+                CinemaState.lastMouseY = e.clientY;
+                CinemaState.userYawOffset = THREE.MathUtils.clamp(CinemaState.userYawOffset - dx * 0.0032, -2.4, 2.4);
+                CinemaState.userPitchOffset = THREE.MathUtils.clamp(CinemaState.userPitchOffset - dy * 0.0026, -0.95, 0.95);
+                if (!CinemaState.playing) {
+                    evaluateCinemaFrame(CinemaState.time);
+                }
+            });
+
+// =========================================================================
+            // 30B. INJECTED CINEMA HEADER BUTTON, FADE VEIL & MINIMAL PLAYBACK DOCK
+            // =========================================================================
+            const cinemaStyle = document.createElement('style');
+            cinemaStyle.textContent = `
+                .cinema-poi-dot {
+                    position: absolute;
+                    top: 50%;
+                    transform: translate(-50%, -50%);
+                    width: 14px;
+                    height: 14px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    z-index: 5;
+                }
+                .cinema-poi-dot::before {
+                    content: '';
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 9999px;
+                    background: rgba(226, 232, 240, 0.72);
+                    border: 1.5px solid rgba(15, 23, 42, 0.9);
+                    transition: transform 0.15s ease, background 0.15s ease;
+                }
+                .cinema-poi-dot:hover::before {
+                    transform: scale(1.45);
+                    background: #38bdf8;
+                }
+                .cinema-poi-dot.active::before {
+                    transform: scale(1.55);
+                    background: #fbbf24;
+                    box-shadow: 0 0 8px rgba(251, 191, 36, 0.85);
+                }
+                .cinema-poi-dot .cinema-poi-tip {
+                    position: absolute;
+                    bottom: 18px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    white-space: nowrap;
+                    background: rgba(15, 23, 42, 0.94);
+                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    color: #f8fafc;
+                    font-size: 10px;
+                    font-weight: 600;
+                    padding: 2px 7px;
+                    border-radius: 7px;
+                    pointer-events: none;
+                    opacity: 0;
+                    transition: opacity 0.14s ease;
+                }
+                .cinema-poi-dot:hover .cinema-poi-tip,
+                .cinema-poi-dot.active .cinema-poi-tip {
+                    opacity: 1;
+                }
+                .cinema-poi-dot.active .cinema-poi-tip {
+                    border-color: rgba(251, 191, 36, 0.55);
+                    color: #fde68a;
+                    bottom: 20px;
+                }
+            `;
+            document.head.appendChild(cinemaStyle);
+
+            // 1. Header "Cinema Tour" Button (placed right beside "Walk Inside")
+            const walkTopBtn = document.getElementById('walk-toggle-top');
+            const cinemaTopBtn = document.createElement('button');
+            cinemaTopBtn.id = 'cinema-tour-top-btn';
+            cinemaTopBtn.className = 'glass-panel px-3 py-2 rounded-xl text-xs font-semibold text-amber-300 hover:text-white hover:bg-amber-500/25 border border-amber-400/35 transition flex items-center gap-1.5';
+            cinemaTopBtn.title = 'Launch Cinematic Flyby & Full Interior Walkthrough Tour';
+            cinemaTopBtn.innerHTML = '<span>▶</span><span>Cinema Tour</span>';
+            if (walkTopBtn && walkTopBtn.parentElement) {
+                walkTopBtn.parentElement.insertBefore(cinemaTopBtn, walkTopBtn.nextSibling);
+            }
+
+            // 2. Soft Doorway Transition Veil (sits below Cinema HUD)
+            const fadeVeil = document.createElement('div');
+            fadeVeil.id = 'cinema-fade-veil';
+            fadeVeil.className = 'fixed inset-0 bg-slate-950 pointer-events-none z-30';
+            fadeVeil.style.opacity = '0';
+            fadeVeil.style.transition = 'opacity 0.1s linear';
+            document.body.appendChild(fadeVeil);
+
+            // 3. Minimal Cinema Overlay (clears standard HUD, keeps only chapter badge + playback dock)
+            const cinemaOverlay = document.createElement('div');
+            cinemaOverlay.id = 'cinema-overlay';
+            cinemaOverlay.className = 'hidden fixed inset-0 z-40 pointer-events-none flex flex-col justify-between p-3 sm:p-5';
+            cinemaOverlay.innerHTML = `
+                <!-- Minimal Top Row: Active Chapter Badge + Exit Button -->
+                <div class="flex items-start justify-between gap-2">
+                    <div class="glass-panel pointer-events-auto px-3.5 py-2 rounded-2xl border border-white/15 flex items-center gap-2.5">
+                        <span id="cinema-posture-pill" class="px-2 py-0.5 rounded-md bg-amber-400 text-slate-950 text-[10px] font-bold tracking-wide">AERIAL</span>
+                        <div>
+                            <div id="cinema-poi-title" class="text-xs sm:text-sm font-bold text-white leading-tight">Street Front Flyby (SW)</div>
+                            <div class="text-[10px] text-slate-400">Drag viewport to look around • Click any marker to jump • Space to pause</div>
+                        </div>
+                    </div>
+                    <button id="cinema-exit-btn" class="glass-panel pointer-events-auto px-3 py-2 rounded-xl text-xs font-semibold text-rose-200 hover:bg-rose-500/30 border border-rose-400/30 transition">
+                        Exit Tour (Esc)
+                    </button>
+                </div>
+
+                <!-- Minimal Floating Bottom Playback, POI Progress & Lighting Dock -->
+                <div class="w-full max-w-4xl mx-auto glass-panel pointer-events-auto rounded-2xl px-4 py-3 border border-white/15 space-y-2.5">
+                    <!-- Scrubbable Progress Bar with Clickable POI Markers -->
+                    <div class="flex items-center gap-3 pt-4">
+                        <span id="cinema-time-cur" class="font-mono text-[10px] text-amber-300 w-9 text-right">0:00</span>
+                        <div id="cinema-progress-track" class="relative flex-1 h-2 bg-white/15 rounded-full cursor-pointer select-none">
+                            <div id="cinema-progress-fill" class="absolute inset-y-0 left-0 bg-gradient-to-r from-sky-400 to-amber-400 rounded-full pointer-events-none" style="width: 0%"></div>
+                            <div id="cinema-poi-markers" class="absolute inset-0"></div>
+                        </div>
+                        <span id="cinema-time-tot" class="font-mono text-[10px] text-slate-400 w-9">0:00</span>
+                    </div>
+
+                    <!-- Play, Speed, Sunlight & Interior Lighting Controls -->
+                    <div class="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        <!-- Transport Controls -->
+                        <div class="flex items-center gap-1">
+                            <button id="cinema-prev-btn" class="bg-white/10 hover:bg-white/20 text-slate-200 px-2.5 py-1 rounded-lg font-semibold transition" title="Previous Point of Interest (←)">⏮</button>
+                            <button id="cinema-play-btn" class="bg-amber-400 hover:bg-amber-300 text-slate-950 px-3.5 py-1 rounded-lg font-bold transition min-w-[74px]" title="Play / Pause (Space)">⏸ Pause</button>
+                            <button id="cinema-next-btn" class="bg-white/10 hover:bg-white/20 text-slate-200 px-2.5 py-1 rounded-lg font-semibold transition" title="Next Point of Interest (→)">⏭</button>
+                            <button id="cinema-loop-btn" class="bg-emerald-500/25 text-emerald-300 border border-emerald-400/35 px-2 py-1 rounded-lg text-[10px] font-bold transition ml-0.5" title="Toggle Continuous Loop">↻ Loop</button>
+                        </div>
+
+                        <!-- Speed Controls -->
+                        <div class="flex items-center gap-1 bg-black/35 p-0.5 rounded-lg">
+                            <span class="text-[9px] text-slate-400 px-1.5 uppercase font-semibold">Speed</span>
+                            <button class="cinema-spd-btn seg-btn" data-spd="0.5">0.5×</button>
+                            <button class="cinema-spd-btn seg-btn active-sky" data-spd="1">1×</button>
+                            <button class="cinema-spd-btn seg-btn" data-spd="1.5">1.5×</button>
+                            <button class="cinema-spd-btn seg-btn" data-spd="2">2×</button>
+                            <button class="cinema-spd-btn seg-btn" data-spd="3">3×</button>
+                        </div>
+
+                        <!-- Sunlight & Interior LED Controls -->
+                        <div class="flex flex-wrap items-center gap-2">
+                            <div class="flex items-center gap-0.5 bg-black/35 p-0.5 rounded-lg">
+                                <button class="cinema-season-btn seg-btn" data-day="355" title="Summer Solstice (Dec 21)">Sum</button>
+                                <button class="cinema-season-btn seg-btn" data-day="80" title="Equinox (Mar 21)">Eqx</button>
+                                <button class="cinema-season-btn seg-btn" data-day="172" title="Winter Solstice (Jun 21)">Win</button>
+                            </div>
+                            <div class="flex items-center gap-1.5 bg-black/35 px-2 py-1 rounded-lg">
+                                <span class="text-amber-300 text-[10px]">☀</span>
+                                <input id="cinema-sun-slider" type="range" min="5.5" max="20.5" step="0.1" value="10.5" class="w-24 accent-amber-400 h-1 bg-slate-700 rounded-lg cursor-pointer">
+                                <span id="cinema-sun-time" class="font-mono text-[10px] text-slate-200 w-12 text-right">10:30 AM</span>
+                            </div>
+                            <button id="cinema-led-btn" class="bg-white/10 hover:bg-white/20 text-amber-200 border border-white/15 px-2 py-1 rounded-lg text-[10px] font-semibold transition" title="Cycle Interior LED Downlights (Auto / On / Off)">LED: Auto</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(cinemaOverlay);
+
+            // Populate Clickable POI Markers proportionally along the Progress Bar
+            const markersHost = document.getElementById('cinema-poi-markers');
+            const poiDotMap = new Map();
+            CINEMA_POIS.forEach(poi => {
+                const startT = POI_START_TIMES[poi.id] ?? 0;
+                const pct = (startT / CinemaState.totalDuration) * 100;
+                const dot = document.createElement('button');
+                dot.type = 'button';
+                dot.className = 'cinema-poi-dot';
+                dot.style.left = `${pct.toFixed(2)}%`;
+                dot.title = `${poi.title} (${formatCinemaClock(startT)})`;
+                dot.innerHTML = `<span class="cinema-poi-tip">${poi.short}</span>`;
+                dot.addEventListener('pointerdown', (e) => e.stopPropagation());
+                dot.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    jumpToPoi(poi.id);
+                });
+                markersHost.appendChild(dot);
+                poiDotMap.set(poi.id, dot);
+            });
+
+            // =========================================================================
+            // 30C. PLAYBACK, SCRUBBING, LIGHTING SYNC & ENTER/EXIT LIFECYCLE
+            // =========================================================================
+            function formatCinemaClock(sec) {
+                const s = Math.max(0, Math.floor(sec));
+                const m = Math.floor(s / 60);
+                const r = s % 60;
+                return `${m}:${r < 10 ? '0' : ''}${r}`;
+            }
+
+            let lastRenderedPoiId = null;
+
+            function syncCinemaProgressUI() {
+                const pct = THREE.MathUtils.clamp((CinemaState.time / CinemaState.totalDuration) * 100, 0, 100);
+                document.getElementById('cinema-progress-fill').style.width = `${pct.toFixed(2)}%`;
+                document.getElementById('cinema-time-cur').textContent = formatCinemaClock(CinemaState.time);
+
+                if (lastRenderedPoiId !== CinemaState.currentPoiId) {
+                    lastRenderedPoiId = CinemaState.currentPoiId;
+                    const meta = CINEMA_POIS.find(p => p.id === CinemaState.currentPoiId) || CINEMA_POIS[0];
+                    document.getElementById('cinema-poi-title').textContent = meta.title;
+
+                    const badge = document.getElementById('cinema-posture-pill');
+                    badge.textContent = meta.posture;
+                    badge.className = meta.posture === 'SEATED'
+                        ? 'px-2 py-0.5 rounded-md bg-emerald-400 text-slate-950 text-[10px] font-bold tracking-wide'
+                        : meta.posture === 'STANDING'
+                            ? 'px-2 py-0.5 rounded-md bg-sky-400 text-slate-950 text-[10px] font-bold tracking-wide'
+                            : meta.posture === 'WALKING'
+                                ? 'px-2 py-0.5 rounded-md bg-cyan-300 text-slate-950 text-[10px] font-bold tracking-wide'
+                                : 'px-2 py-0.5 rounded-md bg-amber-400 text-slate-950 text-[10px] font-bold tracking-wide';
+
+                    poiDotMap.forEach((dot, id) => {
+                        dot.classList.toggle('active', id === CinemaState.currentPoiId);
+                    });
+                }
+            }
+
+            function syncCinemaHUD() {
+                document.getElementById('cinema-time-tot').textContent = formatCinemaClock(CinemaState.totalDuration);
+
+                const playBtn = document.getElementById('cinema-play-btn');
+                playBtn.textContent = CinemaState.playing ? '⏸ Pause' : '▶ Play';
+
+                const loopBtn = document.getElementById('cinema-loop-btn');
+                loopBtn.className = CinemaState.loop
+                    ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-400/35 px-2 py-1 rounded-lg text-[10px] font-bold transition ml-0.5'
+                    : 'bg-white/10 text-slate-400 border border-white/10 px-2 py-1 rounded-lg text-[10px] font-semibold transition ml-0.5';
+
+                document.querySelectorAll('.cinema-spd-btn').forEach(b => {
+                    const active = Math.abs(parseFloat(b.dataset.spd) - CinemaState.speed) < 0.05;
+                    b.className = 'cinema-spd-btn seg-btn' + (active ? ' active-sky' : '');
+                });
+
+                // Sync Sunlight & LED indicators from master state
+                const curDay = Math.round(parseFloat(daySlider.value) || 172);
+                const curTime = parseFloat(timeSlider.value) || 10.5;
+                document.getElementById('cinema-sun-slider').value = curTime;
+                document.getElementById('cinema-sun-time').textContent = formatTime(curTime);
+                document.querySelectorAll('.cinema-season-btn').forEach(b => {
+                    const active = Math.abs(parseInt(b.dataset.day, 10) - curDay) <= 12;
+                    b.className = 'cinema-season-btn seg-btn' + (active ? ' active-upg' : '');
+                });
+
+                const ledLabels = { auto: 'LED: Auto', on: 'LED: On', off: 'LED: Off' };
+                document.getElementById('cinema-led-btn').textContent = ledLabels[SelectionsState.ledMode] || 'LED: Auto';
+            }
+
+            function jumpToPoi(poiId) {
+                const t = POI_START_TIMES[poiId];
+                if (t === undefined) return;
+                CinemaState.time = t;
+                CinemaState.userYawOffset = 0;
+                CinemaState.userPitchOffset = 0;
+                evaluateCinemaFrame(CinemaState.time);
+                syncCinemaProgressUI();
+            }
+
+            function stepPoi(dir) {
+                const idx = CINEMA_POIS.findIndex(p => p.id === CinemaState.currentPoiId);
+                const nextIdx = (idx + dir + CINEMA_POIS.length) % CINEMA_POIS.length;
+                jumpToPoi(CINEMA_POIS[nextIdx].id);
+            }
+
+            function setCinemaMode(enable) {
+                if (enable === CinemaState.active) return;
+
+                const hud = document.getElementById('hud-wrapper');
+                const fpsBar = document.getElementById('fps-bar');
+                const fpsCross = document.getElementById('fps-crosshair');
+                const panelBanner = document.getElementById('solar-panel-edit-banner');
+                const ceilGF = groundGroup.getObjectByName('ceiling-gf');
+                const cornGF = groundGroup.getObjectByName('cornice-gf');
+
+                if (enable) {
+                    if (fpsActive) setWalkMode(false);
+                    if (camAnim) cancelAnimationFrame(camAnim);
+
+                    // Save visibility & door states so exiting restores everything cleanly
+                    CinemaState.savedVisibility = {
+                        roof: roofGroup.visible,
+                        ground: groundGroup.visible,
+                        lower: lowerGroup.visible,
+                        furniture: furnitureGroup.visible,
+                        ceilGF: ceilGF ? ceilGF.visible : true,
+                        cornGF: cornGF ? cornGF.visible : true
+                    };
+                    CinemaState.savedDoorOpen = {
+                        D01: OPENING_STATE.D01 ? OPENING_STATE.D01.openPct : 0,
+                        D07: OPENING_STATE.D07 ? OPENING_STATE.D07.openPct : 0,
+                        D13: OPENING_STATE.D13 ? OPENING_STATE.D13.openPct : 0
+                    };
+                    CinemaState.activeDoorQuant = { D01: -1, D07: -1, D13: -1 };
+
+                    // Show complete house, interior plaster, ceilings & furniture
+                    roofGroup.visible = true;
+                    groundGroup.visible = true;
+                    lowerGroup.visible = true;
+                    furnitureGroup.visible = true;
+                    if (ceilGF) ceilGF.visible = true;
+                    if (cornGF) cornGF.visible = true;
+
+                    // Clear all standard HUD elements & show Cinema Overlay
+                    if (hud) hud.classList.add('hidden');
+                    if (fpsBar) fpsBar.classList.add('hidden');
+                    if (fpsCross) fpsCross.classList.add('hidden');
+                    if (panelBanner) panelBanner.classList.add('hidden');
+                    cinemaOverlay.classList.remove('hidden');
+
+                    controls.enabled = false;
+                    CinemaState.active = true;
+                    CinemaState.playing = true;
+                    CinemaState.time = 0;
+                    CinemaState.userYawOffset = 0;
+                    CinemaState.userPitchOffset = 0;
+                    lastRenderedPoiId = null;
+
+                    clock.getDelta(); // Flush accumulated frame delta
+                    evaluateCinemaFrame(0);
+                    syncCinemaHUD();
+                    syncCinemaProgressUI();
+                } else {
+                    CinemaState.active = false;
+                    CinemaState.draggingLook = false;
+                    fadeVeil.style.opacity = '0';
+                    cinemaOverlay.classList.add('hidden');
+                    if (hud) hud.classList.remove('hidden');
+
+                    // Restore original door positions & visibility
+                    ['D01', 'D07', 'D13'].forEach(id => {
+                        if (OPENING_STATE[id] && CinemaState.savedDoorOpen[id] !== undefined) {
+                            OPENING_STATE[id].openPct = CinemaState.savedDoorOpen[id];
+                        }
+                    });
+                    rebuildDynamicWallsAndOpenings();
+                    populateWindowUI();
+
+                    if (CinemaState.savedVisibility) {
+                        roofGroup.visible = CinemaState.savedVisibility.roof;
+                        groundGroup.visible = CinemaState.savedVisibility.ground;
+                        lowerGroup.visible = CinemaState.savedVisibility.lower;
+                        furnitureGroup.visible = CinemaState.savedVisibility.furniture;
+                        if (ceilGF) ceilGF.visible = CinemaState.savedVisibility.ceilGF;
+                        if (cornGF) cornGF.visible = CinemaState.savedVisibility.cornGF;
+                    }
+
+                    // Hand camera smoothly back to OrbitControls without jumping
+                    const fwd = new THREE.Vector3(0, 0, -6).applyQuaternion(camera.quaternion);
+                    controls.target.copy(camera.position).add(fwd);
+                    controls.enabled = true;
+                    controls.update();
+                }
+            }
+
+            // =========================================================================
+            // 30D. EVENT LISTENERS, PROGRESS SCRUBBING & KEYBOARD SHORTCUTS
+            // =========================================================================
+            cinemaTopBtn.addEventListener('click', () => setCinemaMode(true));
+            document.getElementById('cinema-exit-btn').addEventListener('click', () => setCinemaMode(false));
+
+            document.getElementById('cinema-play-btn').addEventListener('click', () => {
+                if (CinemaState.time >= CinemaState.totalDuration - 0.05) CinemaState.time = 0;
+                CinemaState.playing = !CinemaState.playing;
+                syncCinemaHUD();
+            });
+            document.getElementById('cinema-prev-btn').addEventListener('click', () => stepPoi(-1));
+            document.getElementById('cinema-next-btn').addEventListener('click', () => stepPoi(1));
+            document.getElementById('cinema-loop-btn').addEventListener('click', () => {
+                CinemaState.loop = !CinemaState.loop;
+                syncCinemaHUD();
+            });
+
+            document.querySelectorAll('.cinema-spd-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    CinemaState.speed = parseFloat(btn.dataset.spd) || 1.0;
+                    syncCinemaHUD();
+                });
+            });
+
+            // Live Sunlight & LED Downlight Controls inside Cinema Dock
+            document.querySelectorAll('.cinema-season-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    daySlider.value = btn.dataset.day;
+                    syncSolar();
+                    syncCinemaHUD();
+                });
+            });
+
+            document.getElementById('cinema-sun-slider').addEventListener('input', (e) => {
+                timeSlider.value = e.target.value;
+                syncSolar();
+                document.getElementById('cinema-sun-time').textContent = formatTime(parseFloat(e.target.value));
+            });
+
+            document.getElementById('cinema-led-btn').addEventListener('click', () => {
+                const order = ['auto', 'on', 'off'];
+                const next = order[(order.indexOf(SelectionsState.ledMode) + 1) % order.length];
+                SelectionsState.ledMode = next;
+                updateInteriorLighting();
+                syncAllUIFromState();
+                syncCinemaHUD();
+            });
+
+            // Smooth Click & Drag Scrubbing on Progress Track
+            const trackEl = document.getElementById('cinema-progress-track');
+            let scrubbing = false;
+            const scrubToClientX = (clientX) => {
+                const rect = trackEl.getBoundingClientRect();
+                const frac = THREE.MathUtils.clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+                CinemaState.time = frac * CinemaState.totalDuration;
+                CinemaState.userYawOffset = 0;
+                CinemaState.userPitchOffset = 0;
+                evaluateCinemaFrame(CinemaState.time);
+                syncCinemaProgressUI();
+            };
+
+            trackEl.addEventListener('pointerdown', (e) => {
+                scrubbing = true;
+                scrubToClientX(e.clientX);
+            });
+            window.addEventListener('pointermove', (e) => {
+                if (scrubbing && CinemaState.active) scrubToClientX(e.clientX);
+            });
+            window.addEventListener('pointerup', () => { scrubbing = false; });
+
+            // Keyboard Shortcuts while Cinema Tour is Active
+            window.addEventListener('keydown', (e) => {
+                if (!CinemaState.active) return;
+                if (e.code === 'Escape') {
+                    e.preventDefault();
+                    setCinemaMode(false);
+                } else if (e.code === 'Space') {
+                    e.preventDefault();
+                    CinemaState.playing = !CinemaState.playing;
+                    syncCinemaHUD();
+                } else if (e.code === 'ArrowRight') {
+                    e.preventDefault();
+                    stepPoi(1);
+                } else if (e.code === 'ArrowLeft') {
+                    e.preventDefault();
+                    stepPoi(-1);
+                }
+            });
+
+            // =========================================================================
+            // 30E. NON-DESTRUCTIVE ANIMATE() HOOK (BYPASSES ORBITCONTROLS DURING TOUR)
+            // =========================================================================
+            const _prevAnimateCinema = animate;
+            animate = function() {
+                if (CinemaState.active) {
+                    requestAnimationFrame(animate);
+                    const dt = Math.min(clock.getDelta(), 0.05);
+                    updateCinemaTour(dt);
+                    renderer.render(scene, camera);
+                } else {
+                    _prevAnimateCinema();
+                }
+            };
+        })();
+        
         window.onload = () => {
             init();
             animate();
