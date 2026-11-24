@@ -11770,7 +11770,1129 @@
                 }
             };
         })();
-        
+
+
+// =========================================================================
+        // 31. DROP-IN MODULE: PLAN-ACCURATE INTERIOR PARTITIONS, INTERNAL DOORS,
+        //     ROBES, LINEN CUPBOARDS, HOLE-PUNCHED WET TILES & DOUBLE BED (BED 3)
+        // Paste Sections 1 + 2 + 3 immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initAccurateFloorplanPlugin() {
+            const FloorplanState = {
+                cavityMode: 'ajar',         // 'open' (92%) | 'ajar' (65% open, 35% leaf visible) | 'closed' (0%)
+                hingedMode: 'open',         // 'open' (85° swing) | 'ajar' (30°) | 'closed' (0°) — excludes front D01
+                doubleBedRoom: 'bed3',      // 'bed3' (Double in Bed 3 NW, Bunk in Bed 2 SE) | 'bed2' | 'both-bunk'
+                removeGarageDoorD03: true   // Designer update: solid wall between Entry & Garage (no D03)
+            };
+
+            // Exact Plan Coordinates derived from Ground & Lower Ground Floor Plans (mm -> m)
+            const PLAN = {
+                // Ground Floor
+                X_BED1_E:     11.62,  // Bed 1 / (ENS + WIR + Linen) dividing wall
+                X_KITCH_W:    14.19,  // (ENS + WIR + Linen) / Kitchen dividing wall
+                Z_ENS_WIR:    -2.88,  // 1840mm Ensuite / 1320mm WIR dividing wall
+                Z_WIR_LINEN:  -1.47,  // WIR / 510mm Entry Hallway Linen dividing wall
+                // Lower Ground Floor
+                X_BATH_E:     16.95,  // Bath/L'dry NE dividing wall (2100mm room width)
+                X_STAIR_E:    17.02,  // Missing Stairwell NE enclosing wall (separates stairs from Bed 2)
+                X_LINEN_LGF:  15.96,  // LGF Hallway Linen front wall (leaves ~950mm hallway to Bath & stairs)
+                Z_LGF_N:      -1.75,  // Bed 3 / Rumpus & Bath/L'dry SE closure wall
+                Z_LGF_S:       1.45,  // Bed 2 / Rumpus & Stairwell NW wall
+                X_ROBE3_F:    17.54,  // Bed 3 built-in robe front wall (510mm internal depth)
+                Z_ROBE3_END:  -2.92,  // Bed 3 robe SE end wall (1820mm robe + 1100mm D11 door alcove)
+                X_ROBE2_F:    17.61,  // Bed 2 built-in robe front wall (510mm internal depth)
+                Z_ROBE2_START: 2.62,  // Bed 2 robe NW end wall (1100mm D14 door alcove + 1820mm robe)
+                DOOR_H:        2.04   // Standard 2040mm Hume Accent internal door height
+            };
+
+            // Dedicated Layer Groups (kept separate for Roof Off / Lower Floor cutaway compatibility)
+            const planPartitionsGFGroup = new THREE.Group();
+            planPartitionsGFGroup.name = 'plan-partitions-gf';
+            const planPartitionsLGFGroup = new THREE.Group();
+            planPartitionsLGFGroup.name = 'plan-partitions-lgf';
+            const planDoorsGFGroup = new THREE.Group();
+            planDoorsGFGroup.name = 'plan-doors-gf';
+            const planDoorsLGFGroup = new THREE.Group();
+            planDoorsLGFGroup.name = 'plan-doors-lgf';
+            const planSkirtPatchGroup = new THREE.Group();
+            planSkirtPatchGroup.name = 'plan-skirt-patches';
+
+            groundGroup.add(planPartitionsGFGroup, planDoorsGFGroup, planSkirtPatchGroup);
+            lowerGroup.add(planPartitionsLGFGroup, planDoorsLGFGroup);
+
+            // Dynamically tracks Section 29's 2.40m / 2.55m / 2.80m ceiling height shift
+            function getLiveGFCeilY() {
+                return Y_GF_CEIL + (roofGroup ? roofGroup.position.y : 0);
+            }
+
+            // =========================================================================
+            // 31A. HIDE LEGACY INTERNAL PARTITIONS (ZERO-EDIT SURGERY)
+            // =========================================================================
+            function hideLegacyInternalPartitions() {
+                const box = new THREE.Box3();
+                const size = new THREE.Vector3();
+
+                // 1. Hide outdated GF internal walls in staticGFGroup (preserve 1050h stairwell guard walls)
+                staticGFGroup.children.forEach(c => {
+                    if (!c.isMesh || c.material !== materials.interiorWall) return;
+                    box.setFromObject(c);
+                    box.getSize(size);
+                    // Preserve the two low 1.05m stairwell balustrade walls at X=17.02 & Z=1.45
+                    if (size.y < 1.35) return;
+                    c.visible = false;
+                });
+
+                // 2. Hide all 3 outdated LGF internal walls in staticLGFGroup
+                staticLGFGroup.children.forEach(c => {
+                    if (c.isMesh && c.material === materials.interiorWall) {
+                        c.visible = false;
+                    }
+                });
+
+                // 3. Hide Section 29's old ExtrudeGeometry partition height extensions (keep BoxGeometry kitchen bulkheads!)
+                const hExt = groundGroup.getObjectByName('ceiling-height-extensions');
+                if (hExt) {
+                    hExt.children.forEach(c => {
+                        if (c.isMesh && c.material === materials.interiorWall && c.geometry && c.geometry.type === 'ExtrudeGeometry') {
+                            c.visible = false;
+                        }
+                    });
+                }
+            }
+
+            // =========================================================================
+            // 31B. PLAN-ACCURATE GF & LGF INTERNAL PARTITION WALLS
+            // =========================================================================
+            function rebuildAccuratePartitions() {
+                clearGroup(planPartitionsGFGroup);
+                clearGroup(planPartitionsLGFGroup);
+                hideLegacyInternalPartitions();
+
+                const isRev1 = currentRevision === 1;
+                const gfIn = isRev1 ? 0.07 : 0.12;
+                const gfCeilY = getLiveGFCeilY();
+                const dh = PLAN.DOOR_H;
+
+                // ---------------- GROUND FLOOR PARTITIONS ----------------
+                // 1. Bed 1 SE Wall (X_FRONT_ENTRY -> 11.62) with Hinged Door D04 (870mm)
+                makeWallX(
+                    X_FRONT_ENTRY + gfIn, PLAN.X_BED1_E,
+                    Y_GF_FFL, gfCeilY, Z_BED1_SE, 0.095, materials.interiorWall,
+                    [{ x0: 10.64, x1: 11.51, y0: Y_GF_FFL, y1: Y_GF_FFL + dh }],
+                    planPartitionsGFGroup
+                );
+
+                // 2. Bed 1 / (Ensuite + WIR + Linen) Wall at X = 11.62 with Bed 1 -> WIR Cavity Slider (870mm)
+                makeWallZ(
+                    Z_NW + gfIn, Z_BED1_SE,
+                    Y_GF_FFL, gfCeilY, gfCeilY, PLAN.X_BED1_E, 0.095, materials.interiorWall,
+                    [{ z0: -2.58, z1: -1.71, y0: Y_GF_FFL, y1: Y_GF_FFL + dh }],
+                    planPartitionsGFGroup
+                );
+
+                // 3. Ensuite / WIR Dividing Wall at Z = -2.88 with Cavity Slider D05 (870mm, clear of 1800mm vanity)
+                makeWallX(
+                    PLAN.X_BED1_E, PLAN.X_KITCH_W,
+                    Y_GF_FFL, gfCeilY, PLAN.Z_ENS_WIR, 0.095, materials.interiorWall,
+                    [{ x0: 12.74, x1: 13.61, y0: Y_GF_FFL, y1: Y_GF_FFL + dh }],
+                    planPartitionsGFGroup
+                );
+
+                // 4. WIR / Hallway Linen Back Wall at Z = -1.47 (solid, separates WIR from Entry Linen cupboard)
+                makeWallX(
+                    PLAN.X_BED1_E, PLAN.X_KITCH_W,
+                    Y_GF_FFL, gfCeilY, PLAN.Z_WIR_LINEN, 0.090, materials.interiorWall,
+                    [], planPartitionsGFGroup
+                );
+
+                // 5. Hallway Linen Front Wall at Z = Z_BED1_SE (-0.84) with Sliding Doors D06 (2325mm)
+                makeWallX(
+                    PLAN.X_BED1_E, PLAN.X_KITCH_W,
+                    Y_GF_FFL, gfCeilY, Z_BED1_SE, 0.095, materials.interiorWall,
+                    [{ x0: 11.74, x1: 14.065, y0: Y_GF_FFL, y1: Y_GF_FFL + dh }],
+                    planPartitionsGFGroup
+                );
+
+                // 6. Kitchen / (Ensuite + WIR + Linen) Full-Height Dividing Wall at X = 14.19
+                makeWallZ(
+                    Z_NW + gfIn, Z_BED1_SE,
+                    Y_GF_FFL, gfCeilY, gfCeilY, PLAN.X_KITCH_W, 0.095, materials.interiorWall,
+                    [], planPartitionsGFGroup
+                );
+
+                // 7. Entry / Garage Wall at Z_SPLIT (0.74) — SOLID (D03 removed per designer!)
+                const garDoorCut = FloorplanState.removeGarageDoorD03
+                    ? []
+                    : [{ x0: 14.05, x1: 14.92, y0: Y_GF_FFL, y1: Y_GF_FFL + dh }];
+                makeWallX(
+                    X_FRONT_ENTRY + gfIn, 15.05,
+                    Y_GAR_SSL, gfCeilY, Z_SPLIT, 0.10, materials.interiorWall,
+                    garDoorCut, planPartitionsGFGroup
+                );
+
+                // 8. Garage / Stairwell Full-Height Dividing Wall at X = 15.05
+                makeWallZ(
+                    Z_SPLIT, Z_SE - gfIn,
+                    Y_GAR_SSL, gfCeilY, gfCeilY, 15.05, 0.10, materials.interiorWall,
+                    [], planPartitionsGFGroup
+                );
+
+                // ---------------- LOWER GROUND FLOOR PARTITIONS ----------------
+                const lgfNW = isRev1 ? (Z_NW + 0.068) : (Z_NW + 0.128);
+                const lgfSE = isRev1 ? (Z_SE - 0.068) : (Z_SE - 0.128);
+                const lgfSW = X_LOWER_START + 0.128;
+                const lgfNE = X_REAR_WALL - 0.128;
+
+                // 1. Bath/Laundry NE Wall at X = 16.95 (Z_NW -> -1.75)
+                makeWallZ(
+                    lgfNW, PLAN.Z_LGF_N,
+                    Y_LGF_SSL, Y_LGF_CEIL, Y_LGF_CEIL, PLAN.X_BATH_E, 0.095, materials.interiorWall,
+                    [], planPartitionsLGFGroup
+                );
+
+                // 2. Bath/Laundry SE Closure Wall at Z = -1.75 (SW -> 16.95) with Hinged Door D09 (870mm)
+                makeWallX(
+                    lgfSW, PLAN.X_BATH_E,
+                    Y_LGF_SSL, Y_LGF_CEIL, PLAN.Z_LGF_N, 0.095, materials.interiorWall,
+                    [{ x0: 16.01, x1: 16.88, y0: Y_LGF_SSL, y1: Y_LGF_SSL + dh }],
+                    planPartitionsLGFGroup
+                );
+
+                // 3. Bed 3 / Rumpus Wall at Z = -1.75 (16.95 -> NE) with Hinged Door D11 (870mm)
+                makeWallX(
+                    PLAN.X_BATH_E, lgfNE,
+                    Y_LGF_SSL, Y_LGF_CEIL, PLAN.Z_LGF_N, 0.095, materials.interiorWall,
+                    [{ x0: 17.06, x1: 17.93, y0: Y_LGF_SSL, y1: Y_LGF_SSL + dh }],
+                    planPartitionsLGFGroup
+                );
+
+                // 4. Bed 3 Built-In Robe Walls (Front at X = 17.54 w/ D12 1675mm + SE end wall at Z = -2.92)
+                makeWallZ(
+                    lgfNW, PLAN.Z_ROBE3_END,
+                    Y_LGF_SSL, Y_LGF_CEIL, Y_LGF_CEIL, PLAN.X_ROBE3_F, 0.090, materials.interiorWall,
+                    [{ z0: -4.64, z1: -2.965, y0: Y_LGF_SSL, y1: Y_LGF_SSL + dh }],
+                    planPartitionsLGFGroup
+                );
+                makeWallX(
+                    PLAN.X_BATH_E, PLAN.X_ROBE3_F + 0.045,
+                    Y_LGF_SSL, Y_LGF_CEIL, PLAN.Z_ROBE3_END, 0.090, materials.interiorWall,
+                    [], planPartitionsLGFGroup
+                );
+
+                // 5. LGF Hallway Linen Cupboard (between Bath/Laundry & Stairwell, Front at X = 15.96 w/ D08 1875mm)
+                makeWallZ(
+                    PLAN.Z_LGF_N, PLAN.Z_LGF_S,
+                    Y_LGF_SSL, Y_LGF_CEIL, Y_LGF_CEIL, PLAN.X_LINEN_LGF, 0.095, materials.interiorWall,
+                    [{ z0: -1.10, z1: 0.775, y0: Y_LGF_SSL, y1: Y_LGF_SSL + dh }],
+                    planPartitionsLGFGroup
+                );
+                // Close Stairwell NW Side behind Linen (X_SW -> 15.96 at Z = 1.45)
+                makeWallX(
+                    lgfSW, PLAN.X_LINEN_LGF + 0.045,
+                    Y_LGF_SSL, Y_LGF_CEIL, PLAN.Z_LGF_S, 0.095, materials.interiorWall,
+                    [], planPartitionsLGFGroup
+                );
+
+                // 6. MISSING STAIRWELL ENCLOSING WALL at X = 17.02 (Z = 1.45 -> Z_SE, separates stairs from Bed 2!)
+                makeWallZ(
+                    PLAN.Z_LGF_S, lgfSE,
+                    Y_LGF_SSL, Y_GF_FFL, Y_GF_FFL, PLAN.X_STAIR_E, 0.095, materials.interiorWall,
+                    [], planPartitionsLGFGroup
+                );
+
+                // 7. Bed 2 / Rumpus Wall at Z = 1.45 (17.02 -> NE) with Hinged Door D14 (870mm)
+                makeWallX(
+                    PLAN.X_STAIR_E, lgfNE,
+                    Y_LGF_SSL, Y_LGF_CEIL, PLAN.Z_LGF_S, 0.095, materials.interiorWall,
+                    [{ x0: 17.13, x1: 18.00, y0: Y_LGF_SSL, y1: Y_LGF_SSL + dh }],
+                    planPartitionsLGFGroup
+                );
+
+                // 8. Bed 2 Built-In Robe Walls (Front at X = 17.61 w/ D15 1675mm + NW end wall at Z = 2.62)
+                makeWallZ(
+                    PLAN.Z_ROBE2_START, lgfSE,
+                    Y_LGF_SSL, Y_LGF_CEIL, Y_LGF_CEIL, PLAN.X_ROBE2_F, 0.090, materials.interiorWall,
+                    [{ z0: 2.685, z1: 4.36, y0: Y_LGF_SSL, y1: Y_LGF_SSL + dh }],
+                    planPartitionsLGFGroup
+                );
+                makeWallX(
+                    PLAN.X_STAIR_E, PLAN.X_ROBE2_F + 0.045,
+                    Y_LGF_SSL, Y_LGF_CEIL, PLAN.Z_ROBE2_START, 0.090, materials.interiorWall,
+                    [], planPartitionsLGFGroup
+                );
+            }
+
+            // =========================================================================
+            // 31C. HOLE-PUNCHED WET AREA WALL TILES (FIXES D10 & W03) & FLOOR ZONES
+            // =========================================================================
+            // Scales ExtrudeGeometry world-metre UVs by 0.42 so tile scale matches floor tiles
+            function normalizeTileUVs(mesh) {
+                if (!mesh || !mesh.geometry || !mesh.geometry.attributes.uv) return;
+                const uv = mesh.geometry.attributes.uv;
+                for (let i = 0; i < uv.count; i++) {
+                    uv.setXY(i, uv.getX(i) * 0.42, uv.getY(i) * 0.42);
+                }
+                uv.needsUpdate = true;
+            }
+
+            function addTileWallX(x0, x1, yBot, yTop, zCenter, openings, parent) {
+                const m = makeWallX(x0, x1, yBot, yTop, zCenter, 0.008, materials.wetWallTile, openings, parent);
+                normalizeTileUVs(m);
+                return m;
+            }
+
+            function addTileWallZ(z0, z1, yBot, yTop, xCenter, openings, parent) {
+                const m = makeWallZ(z0, z1, yBot, yTop, yTop, xCenter, 0.008, materials.wetWallTile, openings, parent);
+                normalizeTileUVs(m);
+                return m;
+            }
+
+            function rebuildAccurateWetAreasAndFloors() {
+                clearGroup(flooringZonesGroup);
+
+                const isRev1 = currentRevision === 1;
+                const gfIn = (isRev1 ? 0.07 : 0.12) + 0.016;
+                const gfY = Y_GF_FFL + 0.004;
+                const gfCeilY = getLiveGFCeilY();
+                const lgfY = Y_LGF_SSL + 0.024;
+                const isFullTile = SelectionsState.wallTileHeight === 'full';
+                const S = OPENING_STATE;
+
+                const addFloorZone = (x0, x1, z0, z1, y, mat) => {
+                    const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), mat);
+                    m.rotation.x = -Math.PI / 2;
+                    m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
+                    m.receiveShadow = true;
+                    flooringZonesGroup.add(m);
+                };
+
+                const spanX = (o) => ({ x0: o.center - o.width / 2, x1: o.center + o.width / 2, y0: o.baseY() + o.sill, y1: o.baseY() + o.head });
+
+                // --- 1. GROUND FLOOR FLOORING ZONES ---
+                // Carpet: Bed 1 & Walkthrough WIR (Entry Hallway Linen keeps main planks)
+                addFloorZone(X_FRONT_BED1 + gfIn, PLAN.X_BED1_E - 0.04, Z_NW + gfIn, Z_BED1_SE - 0.04, gfY, materials.carpetFloor);
+                addFloorZone(PLAN.X_BED1_E + 0.04, PLAN.X_KITCH_W - 0.04, PLAN.Z_ENS_WIR + 0.04, PLAN.Z_WIR_LINEN - 0.04, gfY, materials.carpetFloor);
+
+                // Wet Tiles: Ensuite (1840mm deep: Z_NW + gfIn -> Z_ENS_WIR)
+                const ensX0 = PLAN.X_BED1_E + 0.052;
+                const ensX1 = PLAN.X_KITCH_W - 0.052;
+                const ensZ0 = Z_NW + gfIn + 0.006;
+                const ensZ1 = PLAN.Z_ENS_WIR - 0.052;
+                addFloorZone(ensX0, ensX1, ensZ0, ensZ1, gfY, materials.tileFloor);
+
+                // Ensuite Hole-Punched Wall Tiles (never covers W03 or D05!)
+                const ensStdTop = isFullTile ? gfCeilY : (gfY + 1.20);
+                const ensShrTop = isFullTile ? gfCeilY : Math.min(gfCeilY, gfY + 2.40);
+                const d05Cut = [{ x0: 12.74, x1: 13.61, y0: gfY, y1: Y_GF_FFL + PLAN.DOOR_H }];
+                const w03Cut = [spanX(S.W03)];
+
+                // Ensuite NW Wall (cut cleanly around W03!)
+                addTileWallX(ensX0, ensX1, gfY, ensStdTop, ensZ0 + 0.005, w03Cut, flooringZonesGroup);
+                // Ensuite NE Wall (behind 1800mm Timberline Vanity)
+                addTileWallZ(ensZ0, ensZ1, gfY, ensStdTop, ensX1 - 0.005, [], flooringZonesGroup);
+                // Ensuite SW Wall: Shower corner (Z: -3.86..ensZ1) 2.4m high + WC corner (ensZ0..-3.86)
+                addTileWallZ(-3.86, ensZ1, gfY, ensShrTop, ensX0 + 0.005, [], flooringZonesGroup);
+                addTileWallZ(ensZ0, -3.86, gfY, ensStdTop, ensX0 + 0.005, [], flooringZonesGroup);
+                // Ensuite SE Wall: Shower corner (ensX0..12.60) 2.4m high + Vanity/D05 side (cut cleanly around D05!)
+                addTileWallX(ensX0, 12.60, gfY, ensShrTop, ensZ1 - 0.005, [], flooringZonesGroup);
+                addTileWallX(12.60, ensX1, gfY, ensStdTop, ensZ1 - 0.005, d05Cut, flooringZonesGroup);
+
+                // --- 2. LOWER GROUND FLOOR FLOORING ZONES ---
+                const lgfNW = isRev1 ? (Z_NW + 0.078) : (Z_NW + 0.138);
+                const lgfSE = isRev1 ? (Z_SE - 0.078) : (Z_SE - 0.138);
+                const lgfSW = X_LOWER_START + 0.138;
+                const lgfNE = X_REAR_WALL - 0.138;
+
+                // Carpet: Bed 3 (incl. Robe) & Bed 2 / Bed 4 (incl. Robe)
+                addFloorZone(PLAN.X_BATH_E + 0.04, lgfNE, lgfNW, PLAN.Z_LGF_N - 0.04, lgfY, materials.carpetFloor);
+                addFloorZone(PLAN.X_STAIR_E + 0.04, lgfNE, PLAN.Z_LGF_S + 0.04, lgfSE, lgfY, materials.carpetFloor);
+
+                // Wet Tiles: Lower Combined Bathroom & Laundry (SW -> 16.95, NW -> -1.75)
+                const bX0 = lgfSW + 0.004;
+                const bX1 = PLAN.X_BATH_E - 0.052;
+                const bZ0 = lgfNW + 0.004;
+                const bZ1 = PLAN.Z_LGF_N - 0.052;
+                addFloorZone(bX0, bX1, bZ0, bZ1, lgfY, materials.tileFloor);
+
+                // Lower Bath/Laundry Hole-Punched Wall Tiles (NEVER blocks Laundry Door D10 or Entry Door D09!)
+                const bStdTop = isFullTile ? Y_LGF_CEIL : (lgfY + 1.20);
+                const bShrTop = isFullTile ? Y_LGF_CEIL : Math.min(Y_LGF_CEIL, lgfY + 2.40);
+                const d10Cut = [{ x0: S.D10.center - S.D10.width / 2 - 0.01, x1: S.D10.center + S.D10.width / 2 + 0.01, y0: Y_LGF_SSL, y1: Y_LGF_SSL + S.D10.head }];
+                const d09Cut = [{ x0: 16.01, x1: 16.88, y0: Y_LGF_SSL, y1: Y_LGF_SSL + PLAN.DOOR_H }];
+
+                // Bath NW Wall (HOLE-PUNCHED AROUND D10 LAUNDRY DOOR!)
+                addTileWallX(bX0, bX1, lgfY, bStdTop, bZ0 + 0.005, d10Cut, flooringZonesGroup);
+                // Bath SW Wall: Shower corner (Z: -2.72..bZ1) 2.4m high + WC / 900 Vanity / Stacked WM (bZ0..-2.72)
+                addTileWallZ(-2.72, bZ1, lgfY, bShrTop, bX0 + 0.005, [], flooringZonesGroup);
+                addTileWallZ(bZ0, -2.72, lgfY, bStdTop, bX0 + 0.005, [], flooringZonesGroup);
+                // Bath SE Wall: Shower corner (bX0..15.80) 2.4m high + Door D09 wall (cut cleanly around D09!)
+                addTileWallX(bX0, 15.80, lgfY, bShrTop, bZ1 - 0.005, [], flooringZonesGroup);
+                addTileWallX(15.80, bX1, lgfY, bStdTop, bZ1 - 0.005, d09Cut, flooringZonesGroup);
+                // Bath NE Wall (solid opposite vanity/shower)
+                addTileWallZ(bZ0, bZ1, lgfY, bStdTop, bX1 - 0.005, [], flooringZonesGroup);
+            }
+
+            // =========================================================================
+            // 31D. SKIRTING PATCHES (BRIDGE REMOVED D03 + NEW STAIR/BED1/LINEN WALLS)
+            // =========================================================================
+            function patchPlanSkirtings() {
+                clearGroup(planSkirtPatchGroup);
+
+                const prof = SelectionsState.trimProfile || '66dar';
+                const h = prof === '90tall' ? 0.090 : (prof === 'shadowline' ? 0.016 : 0.066);
+                const d = prof === 'shadowline' ? 0.012 : 0.018;
+                const oakActive = Boolean(document.querySelector('.int-skirtfin-btn[data-fin="oak"].active-upg'));
+                const mat = prof === 'shadowline'
+                    ? new THREE.MeshStandardMaterial({ color: 0x1e242b, roughness: 0.95 })
+                    : (oakActive ? new THREE.MeshStandardMaterial({ color: 0xc9a679, roughness: 0.48 }) : materials.interiorTrim);
+
+                const addBarX = (x0, x1, z, y) => {
+                    const len = x1 - x0;
+                    if (len < 0.05) return;
+                    const m = new THREE.Mesh(new THREE.BoxGeometry(len, h, d), mat);
+                    m.position.set((x0 + x1) / 2, y + h / 2, z);
+                    m.receiveShadow = true;
+                    planSkirtPatchGroup.add(m);
+                };
+                const addBarZ = (z0, z1, x, y) => {
+                    const len = z1 - z0;
+                    if (len < 0.05) return;
+                    const m = new THREE.Mesh(new THREE.BoxGeometry(d, h, len), mat);
+                    m.position.set(x, y + h / 2, (z0 + z1) / 2);
+                    m.receiveShadow = true;
+                    planSkirtPatchGroup.add(m);
+                };
+
+                const gfY = Y_GF_FFL + 0.004;
+                const lgfY = Y_LGF_SSL + 0.024;
+
+                // 1. Bridge removed D03 skirting gap on Entry/Garage wall (Z_SPLIT)
+                if (FloorplanState.removeGarageDoorD03) {
+                    addBarX(13.98, 15.00, Z_SPLIT - 0.058, gfY);
+                }
+                // 2. Entry-side skirting along new Bed 1 SE wall (stops cleanly at D04)
+                addBarX(X_FRONT_ENTRY + 0.14, 10.60, Z_BED1_SE + 0.056, gfY);
+                // 3. Lower Ground Hallway & Stairwell Wall skirtings (Linen D08 returns, Bath SE wall, Stair NE wall)
+                addBarZ(PLAN.Z_LGF_N + 0.05, -1.14, PLAN.X_LINEN_LGF + 0.056, lgfY);
+                addBarZ(0.81, PLAN.Z_LGF_S - 0.05, PLAN.X_LINEN_LGF + 0.056, lgfY);
+                addBarZ(PLAN.Z_LGF_S + 0.05, PLAN.Z_ROBE2_START - 0.05, PLAN.X_STAIR_E + 0.056, lgfY);
+            }
+
+// =========================================================================
+            // 31E. INTERNAL DOOR SYSTEM (HINGED, CAVITY SLIDERS & SLIDING ROBE/LINEN)
+            // =========================================================================
+            const doorPanelMat = new THREE.MeshStandardMaterial({
+                color: 0xf7f6f2, roughness: 0.44, metalness: 0.03
+            });
+            const doorTrackMat = new THREE.MeshStandardMaterial({
+                color: 0xd1d5db, roughness: 0.35, metalness: 0.65
+            });
+
+            // Reusable Hume Accent Internal Door Leaf (crisp subtle horizontal coastal router grooves)
+            function createHumeDoorLeaf(width, height, thick = 0.038) {
+                const leaf = new THREE.Group();
+                const body = new THREE.Mesh(new THREE.BoxGeometry(width, height, thick), doorPanelMat);
+                body.castShadow = true;
+                body.receiveShadow = true;
+                leaf.add(body);
+
+                // Subtle horizontal accent shadow lines (Hume Accent style)
+                const grooveMat = new THREE.MeshStandardMaterial({ color: 0xdad7cf, roughness: 0.85 });
+                [-0.58, -0.18, 0.22, 0.62].forEach(gy => {
+                    const g1 = new THREE.Mesh(new THREE.BoxGeometry(width - 0.14, 0.008, thick + 0.004), grooveMat);
+                    g1.position.y = gy;
+                    leaf.add(g1);
+                });
+                return leaf;
+            }
+
+            // Jamb + 66mm / 90mm Architrave Surround around an internal doorway
+            function addInternalDoorFrame(g, width, height, wallThick) {
+                const jT = 0.026;
+                const archW = SelectionsState.trimProfile === '90tall' ? 0.088 : 0.064;
+                const jDepth = wallThick + 0.012;
+
+                // Top & Side Jambs
+                const topJ = new THREE.Mesh(new THREE.BoxGeometry(width, jT, jDepth), materials.interiorTrim);
+                topJ.position.set(0, height - jT / 2, 0);
+                const leftJ = new THREE.Mesh(new THREE.BoxGeometry(jT, height, jDepth), materials.interiorTrim);
+                leftJ.position.set(-width / 2 + jT / 2, height / 2, 0);
+                const rightJ = new THREE.Mesh(new THREE.BoxGeometry(jT, height, jDepth), materials.interiorTrim);
+                rightJ.position.set(width / 2 - jT / 2, height / 2, 0);
+                g.add(topJ, leftJ, rightJ);
+
+                // Both-Side Architraves (omitted cleanly if Shadowline trim is active)
+                if (SelectionsState.trimProfile !== 'shadowline') {
+                    [-1, 1].forEach(side => {
+                        const zOff = side * (jDepth / 2 + 0.009);
+                        const aTop = new THREE.Mesh(new THREE.BoxGeometry(width + archW * 2, archW, 0.016), materials.interiorTrim);
+                        aTop.position.set(0, height + archW / 2 - 0.008, zOff);
+                        const aL = new THREE.Mesh(new THREE.BoxGeometry(archW, height, 0.016), materials.interiorTrim);
+                        aL.position.set(-width / 2 - archW / 2 + 0.008, height / 2, zOff);
+                        const aR = new THREE.Mesh(new THREE.BoxGeometry(archW, height, 0.016), materials.interiorTrim);
+                        aR.position.set(width / 2 + archW / 2 - 0.008, height / 2, zOff);
+                        g.add(aTop, aL, aR);
+                    });
+                }
+            }
+
+            // 1. Hinged Internal Door Builder (axis 'X' = wall runs along X, 'Z' = wall runs along Z)
+            //    hingeEnd: -1 (x0/z0 side) | +1 (x1/z1 side); swingSign: -1 or +1 (world Z or X side door opens into)
+            function addHingedInternalDoor({ axis, wallPos, start, end, yBase, hingeEnd, swingSign, parent }) {
+                const width = end - start;
+                const center = (start + end) / 2;
+                const h = PLAN.DOOR_H;
+                const g = new THREE.Group();
+
+                addInternalDoorFrame(g, width, h, 0.095);
+
+                const leafW = width - 0.056;
+                const leafH = h - 0.032;
+                const swingDeg = FloorplanState.hingedMode === 'open' ? 84
+                    : (FloorplanState.hingedMode === 'ajar' ? 32 : 0);
+                const rad = swingDeg * Math.PI / 180;
+
+                const pivot = new THREE.Group();
+                const hingeLocalX = hingeEnd * (leafW / 2);
+                pivot.position.set(hingeLocalX, leafH / 2 + 0.006, 0);
+
+                const leaf = createHumeDoorLeaf(leafW, leafH, 0.038);
+                leaf.position.set(-hingeEnd * (leafW / 2), 0, 0);
+                pivot.add(leaf);
+
+                // Gainsborough Lever Handles on both sides in active global hardware finish
+                const handleX = -hingeEnd * (leafW - 0.085);
+                [-1, 1].forEach(side => {
+                    const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.014, 12), materials.hardware);
+                    rose.rotation.x = Math.PI / 2;
+                    rose.position.set(handleX, -0.05, side * 0.026);
+                    const lever = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.020, 0.016), materials.hardware);
+                    lever.position.set(handleX + hingeEnd * 0.042, -0.05, side * 0.048);
+                    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.020, 0.020, 0.036), materials.hardware);
+                    neck.position.set(handleX, -0.05, side * 0.032);
+                    pivot.add(rose, lever, neck);
+                });
+
+                // Apply verified right-hand-rule swing angle
+                // Local leaf vector = (-hingeEnd, 0, 0); rotated around +Y by theta gives local Z' = hingeEnd * sin(theta)
+                pivot.rotation.y = hingeEnd * swingSign * rad;
+                g.add(pivot);
+
+                if (axis === 'X') {
+                    g.position.set(center, yBase, wallPos);
+                } else {
+                    g.rotation.y = -Math.PI / 2;
+                    g.position.set(wallPos, yBase, center);
+                }
+                parent.add(g);
+            }
+
+            // 2. Cavity Sliding Door Builder (pocketDir: -1 slides toward start, +1 slides toward end)
+            function addCavitySliderDoor({ axis, wallPos, start, end, yBase, pocketDir, parent }) {
+                const width = end - start;
+                const center = (start + end) / 2;
+                const h = PLAN.DOOR_H;
+                const g = new THREE.Group();
+
+                addInternalDoorFrame(g, width, h, 0.095);
+
+                // Overhead Aluminium Sliding Track
+                const track = new THREE.Mesh(new THREE.BoxGeometry(width - 0.04, 0.024, 0.036), doorTrackMat);
+                track.position.set(0, h - 0.038, 0);
+                g.add(track);
+
+                const leafW = width - 0.052;
+                const leafH = h - 0.048;
+                // 'ajar' = 65% open (35% of leaf clearly visible in doorway, wide enough to walk straight through!)
+                const openFrac = FloorplanState.cavityMode === 'open' ? 0.90
+                    : (FloorplanState.cavityMode === 'ajar' ? 0.64 : 0.0);
+
+                // Only render the exposed portion inside the opening so the concealed pocket section never pokes out
+                const visibleW = Math.max(0.075, leafW * (1 - openFrac));
+                const leaf = createHumeDoorLeaf(visibleW, leafH, 0.036);
+                const leafCenterX = pocketDir * (leafW / 2 - visibleW / 2);
+                leaf.position.set(leafCenterX, leafH / 2 + 0.008, 0);
+                g.add(leaf);
+
+                // Recessed Flush Cavity Pull + Edge Finger Pull in global hardware finish
+                const leadEdgeX = leafCenterX - pocketDir * (visibleW / 2);
+                const pullX = leadEdgeX + pocketDir * 0.045;
+                [-1, 1].forEach(side => {
+                    const flushPull = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.14, 0.008), materials.hardware);
+                    flushPull.position.set(pullX, 0.98, side * 0.020);
+                    g.add(flushPull);
+                });
+                const edgePull = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.075, 0.022), materials.hardware);
+                edgePull.position.set(leadEdgeX - pocketDir * 0.002, 0.98, 0);
+                g.add(edgePull);
+
+                if (axis === 'X') {
+                    g.position.set(center, yBase, wallPos);
+                } else {
+                    g.rotation.y = -Math.PI / 2;
+                    g.position.set(wallPos, yBase, center);
+                }
+                parent.add(g);
+            }
+
+            // 3. Sliding Robe / Linen Cupboard Doors (D06 3-panel, D08/D12/D15 2-panel)
+            function addSlidingCupboardDoors({ axis, wallPos, start, end, yBase, panels = 2, parent }) {
+                const width = end - start;
+                const center = (start + end) / 2;
+                const h = PLAN.DOOR_H;
+                const g = new THREE.Group();
+
+                addInternalDoorFrame(g, width, h, 0.090);
+
+                // Top & Bottom Aluminium Tracks
+                const topTrk = new THREE.Mesh(new THREE.BoxGeometry(width - 0.04, 0.024, 0.068), doorTrackMat);
+                topTrk.position.set(0, h - 0.036, 0);
+                const botTrk = new THREE.Mesh(new THREE.BoxGeometry(width - 0.04, 0.014, 0.068), doorTrackMat);
+                botTrk.position.set(0, 0.007, 0);
+                g.add(topTrk, botTrk);
+
+                const innerW = width - 0.056;
+                const panelW = innerW / panels + 0.022;
+                const panelH = h - 0.056;
+
+                for (let i = 0; i < panels; i++) {
+                    const px = -innerW / 2 + (innerW / panels) * (i + 0.5);
+                    const pz = (i % 2 === 0 ? -0.018 : 0.018);
+                    const pMesh = new THREE.Mesh(new THREE.BoxGeometry(panelW, panelH, 0.026), doorPanelMat);
+                    pMesh.position.set(px, panelH / 2 + 0.016, pz);
+                    pMesh.castShadow = true;
+                    pMesh.receiveShadow = true;
+                    g.add(pMesh);
+
+                    // Slim Vertical Aluminium Stile Edges & Finger Pull
+                    [-panelW / 2 + 0.008, panelW / 2 - 0.008].forEach(sx => {
+                        const stile = new THREE.Mesh(new THREE.BoxGeometry(0.016, panelH, 0.030), doorTrackMat);
+                        stile.position.set(px + sx, panelH / 2 + 0.016, pz);
+                        g.add(stile);
+                    });
+                    const pull = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.14, 0.034), materials.hardware);
+                    pull.position.set(px + (i === 0 ? -panelW * 0.36 : panelW * 0.36), 1.02, pz);
+                    g.add(pull);
+                }
+
+                if (axis === 'X') {
+                    g.position.set(center, yBase, wallPos);
+                } else {
+                    g.rotation.y = -Math.PI / 2;
+                    g.position.set(wallPos, yBase, center);
+                }
+                parent.add(g);
+            }
+
+            // Master Internal Door Builder (GF + LGF)
+            function rebuildAllInternalDoors() {
+                clearGroup(planDoorsGFGroup);
+                clearGroup(planDoorsLGFGroup);
+
+                // Keep Hume door panels synced cleanly to Trim Paint
+                doorPanelMat.color.copy(materials.interiorTrim.color);
+
+                // --- GROUND FLOOR INTERNAL DOORS ---
+                // D04: Bed 1 Hinged Entry Door (hinge at X=11.51, swings inward -Z into Bed 1)
+                addHingedInternalDoor({
+                    axis: 'X', wallPos: Z_BED1_SE, start: 10.64, end: 11.51,
+                    yBase: Y_GF_FFL, hingeEnd: +1, swingSign: -1, parent: planDoorsGFGroup
+                });
+                // Bed 1 -> WIR Cavity Slider (slides -Z into shower/Bed 1 stud pocket)
+                addCavitySliderDoor({
+                    axis: 'Z', wallPos: PLAN.X_BED1_E, start: -2.58, end: -1.71,
+                    yBase: Y_GF_FFL, pocketDir: -1, parent: planDoorsGFGroup
+                });
+                // D05: WIR -> Ensuite Cavity Slider (slides -X into shower wall pocket)
+                addCavitySliderDoor({
+                    axis: 'X', wallPos: PLAN.Z_ENS_WIR, start: 12.74, end: 13.61,
+                    yBase: Y_GF_FFL, pocketDir: -1, parent: planDoorsGFGroup
+                });
+                // D06: Entry Hallway Linen Cupboard (2325mm 3-panel sliders)
+                addSlidingCupboardDoors({
+                    axis: 'X', wallPos: Z_BED1_SE, start: 11.74, end: 14.065,
+                    yBase: Y_GF_FFL, panels: 3, parent: planDoorsGFGroup
+                });
+                // D03: Optional Garage Cavity Door (only rendered if user toggles D03 back on)
+                if (!FloorplanState.removeGarageDoorD03) {
+                    addCavitySliderDoor({
+                        axis: 'X', wallPos: Z_SPLIT, start: 14.05, end: 14.92,
+                        yBase: Y_GF_FFL, pocketDir: -1, parent: planDoorsGFGroup
+                    });
+                }
+
+                // --- LOWER GROUND INTERNAL DOORS ---
+                // D08: LGF Hallway Linen Cupboard (1875mm 2-panel sliders facing Rumpus)
+                addSlidingCupboardDoors({
+                    axis: 'Z', wallPos: PLAN.X_LINEN_LGF, start: -1.10, end: 0.775,
+                    yBase: Y_LGF_SSL, panels: 2, parent: planDoorsLGFGroup
+                });
+                // D09: Lower Bath/Laundry Hinged Door (hinge at X=16.88, swings inward -Z)
+                addHingedInternalDoor({
+                    axis: 'X', wallPos: PLAN.Z_LGF_N, start: 16.01, end: 16.88,
+                    yBase: Y_LGF_SSL, hingeEnd: +1, swingSign: -1, parent: planDoorsLGFGroup
+                });
+                // D11: Bed 3 Hinged Door (hinge at X=17.06, swings inward -Z against Bath wall)
+                addHingedInternalDoor({
+                    axis: 'X', wallPos: PLAN.Z_LGF_N, start: 17.06, end: 17.93,
+                    yBase: Y_LGF_SSL, hingeEnd: -1, swingSign: -1, parent: planDoorsLGFGroup
+                });
+                // D12: Bed 3 Built-In Robe (1675mm 2-panel sliders)
+                addSlidingCupboardDoors({
+                    axis: 'Z', wallPos: PLAN.X_ROBE3_F, start: -4.64, end: -2.965,
+                    yBase: Y_LGF_SSL, panels: 2, parent: planDoorsLGFGroup
+                });
+                // D14: Bed 2 / Bed 4 Hinged Door (hinge at X=17.13, swings inward +Z against Stairwell wall)
+                addHingedInternalDoor({
+                    axis: 'X', wallPos: PLAN.Z_LGF_S, start: 17.13, end: 18.00,
+                    yBase: Y_LGF_SSL, hingeEnd: -1, swingSign: +1, parent: planDoorsLGFGroup
+                });
+                // D15: Bed 2 / Bed 4 Built-In Robe (1675mm 2-panel sliders)
+                addSlidingCupboardDoors({
+                    axis: 'Z', wallPos: PLAN.X_ROBE2_F, start: 2.685, end: 4.36,
+                    yBase: Y_LGF_SSL, panels: 2, parent: planDoorsLGFGroup
+                });
+            }
+
+            // =========================================================================
+            // 31F. PLAN-ACCURATE ROOM FITOUTS (ENSUITE, WIR, LINEN, BATH/L'DRY & BEDS)
+            // =========================================================================
+
+            // 1. UPSTAIRS ENSUITE (1800mm VANITY + PLAN WC/SHR), WALKTHROUGH WIR & ENTRY LINEN
+            InteriorRegistry.register('ensuite', (g, { addBox, addCyl, materials, selections, levels, bounds }) => {
+                const y = levels.GF + 0.006;
+                const isKick = selections.vanityMount === 'kick';
+                const vanY = isKick ? y + 0.12 : y + 0.30;
+                const vanH = isKick ? 0.70 : 0.52;
+
+                // A. ENSUITE (X: 11.67..14.14, Z: -4.74..-2.93)
+                // 1) 1800mm Timberline Vanity along full NE Wall (X = 14.14) + Full-Width Mirror
+                const vanLen = 1.74;
+                const vanZ = -3.84;
+                if (isKick) {
+                    addBox(g, 0.42, 0.12, vanLen - 0.04, 13.91, y, vanZ, materials.cabinetry);
+                }
+                addBox(g, 0.48, vanH, vanLen, 13.88, vanY, vanZ, materials.cabinetry);
+                addBox(g, 0.50, 0.036, vanLen + 0.02, 13.88, y + 0.82, vanZ, materials.benchtop);
+                // Centered Ceramic Basin + Mixer Tap (global hardware finish)
+                addCyl(g, 0.21, 0.17, 0.12, 13.86, y + 0.856, vanZ, furnMats.ceramic, 16);
+                addCyl(g, 0.015, 0.018, 0.17, 14.03, y + 0.856, vanZ, materials.hardware, 8);
+                addBox(g, 0.12, 0.018, 0.018, 13.97, y + 1.00, vanZ, materials.hardware);
+                // 1700mm x 1000mm Polished Mirror + Coastal Accent Plant
+                addBox(g, 0.022, 1.00, 1.70, 14.12, y + 1.12, vanZ, furnMats.mirror, false);
+                addIndoorPlant(g, addCyl, 13.88, y + 0.856, -4.52, 0.32);
+
+                // 2) 900x900 Corner Shower (SHR) in SW-SE Corner (X: 11.68..12.60, Z: -3.84..-2.93)
+                addBox(g, 0.92, 0.05, 0.90, 12.14, y, -3.38, furnMats.ceramic);
+                addShowerPanel(g, addBox, 12.60, y + 0.05, -3.38, 0.90, 'Z', selections.showerScreen);
+                addShowerPanel(g, addBox, 12.14, y + 0.05, -3.84, 0.92, 'X', selections.showerScreen);
+                addCyl(g, 0.09, 0.09, 0.025, 11.96, y + 2.10, -3.38, materials.hardware, 14);
+                addBox(g, 0.03, 0.65, 0.03, 11.71, y + 1.48, -3.38, materials.hardware);
+
+                // 3) Back-to-Wall WC in SW-NW Corner (against X = 11.68 facing NE per plan!)
+                addBox(g, 0.18, 0.78, 0.40, 11.77, y, -4.34, furnMats.ceramic);
+                addCyl(g, 0.18, 0.14, 0.41, 12.06, y, -4.34, furnMats.ceramic, 14);
+
+                // Double Towel Rail on NW Wall under W03
+                addBox(g, 0.68, 0.02, 0.05, 13.08, y + 0.94, bounds.Z_NW + 0.22, materials.hardware);
+
+                // B. WALKTHROUGH WIR (X: 11.67..14.14, Z: -2.83..-1.52)
+                // Full-length Robe shelving, hanging rail & drawer tower along SE Wall (Z = -1.52)
+                addBox(g, 2.36, 0.036, 0.44, 12.90, y + 1.76, -1.74, furnMats.whitePaint); // Top shelf
+                addBox(g, 1.70, 0.036, 0.42, 12.57, y + 0.38, -1.73, furnMats.whitePaint); // Shoe shelf
+                addBox(g, 0.62, 0.95, 0.44, 13.78, y, -1.74, furnMats.whitePaint);         // 4-drawer bank on NE end
+                const rail = addCyl(g, 0.015, 0.015, 1.72, 12.57, y + 1.62, -1.74, materials.hardware, 8);
+                rail.rotation.z = Math.PI / 2;
+
+                // C. ENTRY HALLWAY LINEN CUPBOARD & ELEC/HWS (behind D06, Z: -1.42..-0.89)
+                [0.42, 0.84, 1.26, 1.68].forEach(sy => {
+                    addBox(g, 1.78, 0.028, 0.42, 12.60, y + sy, -1.16, furnMats.whitePaint);
+                });
+                // Compact Electric / Instant HWS Service Cabinet on NE end
+                addBox(g, 0.44, 1.65, 0.40, 13.86, y, -1.16, furnMats.whitePaint);
+            });
+
+            // 2. LOWER COMBINED BATHROOM & LAUNDRY (900mm VANITY + PLAN ORDER) & LGF LINEN (D08)
+            InteriorRegistry.register('lowerBathLaundry', (g, { addBox, addCyl, materials, selections, levels, bounds }) => {
+                const y = levels.LGF + 0.026;
+                const swWallX = bounds.X_LOWER_START + 0.145; // 14.855
+                const isKick = selections.vanityMount === 'kick';
+                const vanY = isKick ? y + 0.12 : y + 0.28;
+                const vanH = isKick ? 0.70 : 0.54;
+
+                // 1) 900x900 Corner Shower (SHR) in SW-SE Corner (Z: -2.72..-1.80)
+                addBox(g, 0.92, 0.05, 0.90, swWallX + 0.46, y, -2.26, furnMats.ceramic);
+                addShowerPanel(g, addBox, swWallX + 0.92, y + 0.05, -2.26, 0.90, 'Z', selections.showerScreen);
+                addShowerPanel(g, addBox, swWallX + 0.46, y + 0.05, -2.72, 0.92, 'X', selections.showerScreen);
+                addCyl(g, 0.085, 0.085, 0.025, swWallX + 0.30, y + 2.08, -2.26, materials.hardware, 12);
+                addBox(g, 0.03, 0.62, 0.03, swWallX + 0.04, y + 1.48, -2.26, materials.hardware);
+
+                // 2) Back-to-Wall WC along SW Wall (Z = -3.06)
+                addBox(g, 0.18, 0.78, 0.40, swWallX + 0.10, y, -3.06, furnMats.ceramic);
+                addCyl(g, 0.18, 0.14, 0.41, swWallX + 0.39, y, -3.06, furnMats.ceramic, 14);
+
+                // 3) 900mm Timberline Vanity (per Lower Ground Plan "900 VANITY", Z = -3.76)
+                const vanZ = -3.76;
+                if (isKick) {
+                    addBox(g, 0.42, 0.12, 0.86, swWallX + 0.22, y, vanZ, materials.cabinetry);
+                }
+                addBox(g, 0.46, vanH, 0.90, swWallX + 0.24, vanY, vanZ, materials.cabinetry);
+                addBox(g, 0.48, 0.035, 0.92, swWallX + 0.24, y + 0.82, vanZ, materials.benchtop);
+                addCyl(g, 0.19, 0.15, 0.12, swWallX + 0.26, y + 0.855, vanZ, furnMats.ceramic, 14);
+                addCyl(g, 0.015, 0.018, 0.16, swWallX + 0.10, y + 0.855, vanZ, materials.hardware, 8);
+                addBox(g, 0.022, 0.92, 0.88, swWallX + 0.02, y + 1.12, vanZ, furnMats.mirror, false);
+
+                // 4) Stacked Front-Loader Washer & Condenser Dryer in NW Corner (Z = -4.52, clear of D10!)
+                const appX = swWallX + 0.31, appZ = -4.52;
+                addBox(g, 0.60, 0.84, 0.60, appX, y, appZ, furnMats.whitePaint);
+                addCyl(g, 0.19, 0.19, 0.04, appX + 0.30, y + 0.26, appZ, furnMats.ovenGlass, 16).rotation.z = Math.PI / 2;
+                addBox(g, 0.02, 0.12, 0.54, appX + 0.30, y + 0.68, appZ, furnMats.darkMetal);
+                addBox(g, 0.62, 0.03, 0.62, appX, y + 0.84, appZ, furnMats.oak);
+                addBox(g, 0.60, 0.84, 0.60, appX, y + 0.87, appZ, furnMats.whitePaint);
+                addCyl(g, 0.19, 0.19, 0.04, appX + 0.30, y + 1.13, appZ, furnMats.ovenGlass, 16).rotation.z = Math.PI / 2;
+                addBox(g, 0.02, 0.12, 0.54, appX + 0.30, y + 1.55, appZ, furnMats.darkMetal);
+
+                // Towel Rail on NE Bath Wall
+                addBox(g, 0.05, 0.02, 0.68, PLAN.X_BATH_E - 0.08, y + 0.96, -3.55, materials.hardware);
+
+                // 5) LGF Hallway Linen Cupboard Internal Shelves (behind D08, X: 14.88..15.88)
+                [0.40, 0.82, 1.24, 1.66].forEach(sy => {
+                    addBox(g, 0.56, 0.028, 2.86, swWallX + 0.32, y + sy, -0.15, furnMats.whitePaint);
+                });
+            });
+
+            // Reusable Styled Double Bed Helper (1380mm W × 1880mm L + Bedside Tables, Lamps & Artwork)
+            function addStyledDoubleBed(g, addBox, addCyl, cx, y, zWall, faceSign, quiltMat, artIdx) {
+                // faceSign: +1 = headboard on NW wall facing +Z; -1 = headboard on SE wall facing -Z
+                const headZ = zWall + faceSign * 0.08;
+                const bedCenterZ = zWall + faceSign * 1.02;
+
+                // Woven Jute Rug
+                addBox(g, 2.25, 0.014, 2.15, cx, y + 0.004, zWall + faceSign * 1.32, furnMats.rugJute, false);
+                // Oak Bed Base, Mattress & Coastal Quilt
+                addBox(g, 1.44, 0.28, 1.94, cx, y + 0.005, bedCenterZ, furnMats.oak);
+                addBox(g, 1.38, 0.20, 1.88, cx, y + 0.285, bedCenterZ, furnMats.linen);
+                addBox(g, 1.42, 0.04, 1.28, cx, y + 0.475, bedCenterZ + faceSign * 0.28, quiltMat);
+                // Upholstered Bedhead & Twin Pillows
+                addBox(g, 1.54, 1.08, 0.11, cx, y + 0.005, headZ, furnMats.sandFabric);
+                addBox(g, 0.58, 0.14, 0.34, cx - 0.34, y + 0.485, zWall + faceSign * 0.32, furnMats.whitePaint);
+                addBox(g, 0.58, 0.14, 0.34, cx + 0.34, y + 0.485, zWall + faceSign * 0.32, furnMats.whitePaint);
+
+                // Flanking Oak Bedside Tables & Warm Lamps
+                [cx - 1.00, cx + 1.00].forEach(bx => {
+                    addBox(g, 0.42, 0.46, 0.42, bx, y + 0.005, zWall + faceSign * 0.25, furnMats.oak);
+                    addTableLamp(g, addCyl, bx, y + 0.465, zWall + faceSign * 0.25);
+                });
+
+                // Coastal Wall Artwork above headboard
+                addWallPainting(g, addBox, 'X', cx, y + 1.54, zWall + faceSign * 0.02, 0.96, 0.62, faceSign, artIdx);
+            }
+
+            // 3. LOWER BEDROOMS: DOUBLE BED IN BED 3 (NW) + BUNK BED IN BED 2 (SE) + BUILT-IN ROBES
+            InteriorRegistry.register('kidsBedrooms', (g, { addBox, addCyl, materials, levels, bounds }) => {
+                const y = levels.LGF + 0.026;
+                const innerNW = bounds.Z_NW + 0.145;
+                const innerSE = bounds.Z_SE - 0.145;
+
+                // --- BED 3 (NW LOWER ROOM — DOUBLE BED BY DEFAULT) ---
+                if (FloorplanState.doubleBedRoom === 'bed3') {
+                    addStyledDoubleBed(g, addBox, addCyl, 19.68, y, innerNW, +1, furnMats.coastalBlue, 2);
+                    addIndoorPlant(g, addCyl, 20.90, y, -2.18, 0.72);
+                } else {
+                    addBunkBed(g, addBox, 19.95, y, innerNW + 0.54, +1, furnMats.coastalBlue);
+                    addBox(g, 0.42, 0.46, 0.42, 18.62, y, innerNW + 0.30, furnMats.oak);
+                    addTableLamp(g, addCyl, 18.62, y + 0.46, innerNW + 0.30);
+                    addStudyDeskAndChair(g, addBox, addCyl, 19.90, y, PLAN.Z_LGF_N - 0.06, -1);
+                    addWallPainting(g, addBox, 'X', 19.90, y + 1.52, PLAN.Z_LGF_N - 0.06, 0.88, 0.58, -1, 2);
+                }
+                // Bed 3 Built-In Robe Interior (shelf + rail behind D12)
+                addBox(g, 0.42, 0.032, 1.72, 17.24, y + 1.74, -3.80, furnMats.whitePaint);
+                const r3 = addCyl(g, 0.014, 0.014, 1.68, 17.24, y + 1.60, -3.80, materials.hardware, 8);
+                r3.rotation.x = Math.PI / 2;
+
+                // --- BED 2 / PLAN BED 2 (SE LOWER ROOM — BUNK BED & STUDY DESK BY DEFAULT) ---
+                if (FloorplanState.doubleBedRoom === 'bed2') {
+                    addStyledDoubleBed(g, addBox, addCyl, 19.68, y, innerSE, -1, furnMats.sageFabric, 0);
+                    addIndoorPlant(g, addCyl, 20.90, y, 1.90, 0.72);
+                } else {
+                    addBunkBed(g, addBox, 19.95, y, innerSE - 0.54, -1, furnMats.sageFabric);
+                    addBox(g, 0.42, 0.46, 0.42, 18.62, y, innerSE - 0.30, furnMats.oak);
+                    addTableLamp(g, addCyl, 18.62, y + 0.46, innerSE - 0.30);
+                    addStudyDeskAndChair(g, addBox, addCyl, 19.90, y, PLAN.Z_LGF_S + 0.06, +1);
+                    addWallPainting(g, addBox, 'X', 19.90, y + 1.52, PLAN.Z_LGF_S + 0.06, 0.88, 0.58, +1, 0);
+                    addIndoorPlant(g, addCyl, 20.92, y, 1.92, 0.70);
+                }
+                // Bed 2 Built-In Robe Interior (shelf + rail behind D15)
+                addBox(g, 0.42, 0.032, 1.72, 17.31, y + 1.74, 3.52, furnMats.whitePaint);
+                const r2 = addCyl(g, 0.014, 0.014, 1.68, 17.31, y + 1.60, 3.52, materials.hardware, 8);
+                r2.rotation.x = Math.PI / 2;
+            });
+
+// =========================================================================
+            // 31G. INJECTED UI CONTROLS INSIDE THE "INTERIOR" TAB & WALK MODE SHORTCUTS
+            // =========================================================================
+            const tabInteriorPlan = document.getElementById('tab-interior');
+            const floorplanCard = document.createElement('div');
+            floorplanCard.id = 'interior-floorplan-doors-card';
+            floorplanCard.className = 'section-card space-y-2';
+            floorplanCard.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span class="text-[11px] font-bold text-emerald-300 uppercase tracking-wide">Plan Doors, Robes & Beds</span>
+                    <div class="flex gap-1">
+                        <button id="plan-view-wir-btn" class="text-[9px] bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 px-1.5 py-0.5 rounded transition" title="Inspect Bed 1 -> WIR -> Ensuite & Hall Linen (Roof Off)">GF Plan</button>
+                        <button id="plan-view-lgf-btn" class="text-[9px] bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 px-1.5 py-0.5 rounded transition" title="Inspect Lower Ground Stair Wall, Linen, Bath & Double Bed">LGF Plan</button>
+                    </div>
+                </div>
+
+                <!-- Cavity Sliding Doors (Bed 1 -> WIR & D05 Ensuite) -->
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] text-slate-300">Cavity Sliders (WIR/Ens)</span>
+                    <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                        <button class="plan-cav-btn seg-btn" data-val="open">Open</button>
+                        <button class="plan-cav-btn seg-btn active-sky" data-val="ajar">Ajar</button>
+                        <button class="plan-cav-btn seg-btn" data-val="closed">Closed</button>
+                    </div>
+                </div>
+
+                <!-- Hinged Internal Doors (D04, D09, D11, D14 — excludes front D01) -->
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] text-slate-300">Internal Hinged Doors</span>
+                    <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                        <button class="plan-hng-btn seg-btn active-std" data-val="open">Open</button>
+                        <button class="plan-hng-btn seg-btn" data-val="ajar">Ajar</button>
+                        <button class="plan-hng-btn seg-btn" data-val="closed">Closed</button>
+                    </div>
+                </div>
+
+                <!-- Lower Bedroom Fitout (Double Bed in Bed 3 NW default) -->
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] text-slate-300">Lower Double Bed</span>
+                    <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                        <button class="plan-bed-btn seg-btn active-sky" data-val="bed3">Bed 3 NW</button>
+                        <button class="plan-bed-btn seg-btn" data-val="bed2">Bed 2 SE</button>
+                        <button class="plan-bed-btn seg-btn" data-val="both-bunk">2× Bunks</button>
+                    </div>
+                </div>
+
+                <!-- Designer Mod: Remove Internal Garage Door D03 -->
+                <label class="flex items-center justify-between text-[10px] text-slate-300 cursor-pointer bg-black/25 px-2 py-1 rounded-lg">
+                    <span>Remove Internal Garage Door (D03)</span>
+                    <input id="plan-remove-d03-chk" type="checkbox" checked class="accent-emerald-400 rounded">
+                </label>
+            `;
+
+            if (tabInteriorPlan) {
+                const ceilCardRef = document.getElementById('interior-ceiling-height-card');
+                if (ceilCardRef && ceilCardRef.nextSibling) {
+                    tabInteriorPlan.insertBefore(floorplanCard, ceilCardRef.nextSibling);
+                } else {
+                    tabInteriorPlan.appendChild(floorplanCard);
+                }
+            }
+
+            // Add Walk Mode quick jump button for Walkthrough WIR -> Ensuite flow
+            const fpsRoomBar = document.getElementById('fps-room-buttons');
+            if (fpsRoomBar && !document.getElementById('fps-wir-jump-btn')) {
+                const wirBtn = document.createElement('button');
+                wirBtn.id = 'fps-wir-jump-btn';
+                wirBtn.className = 'bg-white/10 hover:bg-emerald-500/30 hover:text-emerald-200 text-slate-200 px-2 py-1 rounded-lg transition';
+                wirBtn.textContent = 'WIR';
+                wirBtn.addEventListener('click', () => {
+                    teleportWalkRoom({ id: 'wir', name: 'WIR', floor: 'GF', x: 12.90, z: -2.16, yaw: 0 });
+                });
+                fpsRoomBar.appendChild(wirBtn);
+            }
+
+            // =========================================================================
+            // 31H. MASTER REBUILD, UI SYNC & EVENT LISTENERS
+            // =========================================================================
+            function rebuildAllPlanArchitecture() {
+                rebuildAccuratePartitions();
+                rebuildAccurateWetAreasAndFloors();
+                rebuildAllInternalDoors();
+                patchPlanSkirtings();
+            }
+
+            function syncFloorplanUI() {
+                document.querySelectorAll('.plan-cav-btn').forEach(b => {
+                    b.className = 'plan-cav-btn seg-btn' + (b.dataset.val === FloorplanState.cavityMode ? ' active-sky' : '');
+                });
+                document.querySelectorAll('.plan-hng-btn').forEach(b => {
+                    b.className = 'plan-hng-btn seg-btn' + (b.dataset.val === FloorplanState.hingedMode ? ' active-std' : '');
+                });
+                document.querySelectorAll('.plan-bed-btn').forEach(b => {
+                    b.className = 'plan-bed-btn seg-btn' + (b.dataset.val === FloorplanState.doubleBedRoom ? ' active-sky' : '');
+                });
+                const d03Chk = document.getElementById('plan-remove-d03-chk');
+                if (d03Chk) d03Chk.checked = FloorplanState.removeGarageDoorD03;
+            }
+
+            document.querySelectorAll('.plan-cav-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    FloorplanState.cavityMode = btn.dataset.val;
+                    rebuildAllInternalDoors();
+                    syncFloorplanUI();
+                });
+            });
+
+            document.querySelectorAll('.plan-hng-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    FloorplanState.hingedMode = btn.dataset.val;
+                    rebuildAllInternalDoors();
+                    syncFloorplanUI();
+                });
+            });
+
+            document.querySelectorAll('.plan-bed-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    FloorplanState.doubleBedRoom = btn.dataset.val;
+                    InteriorRegistry.rebuildRoom('kidsBedrooms');
+                    syncFloorplanUI();
+                });
+            });
+
+            const d03ChkEl = document.getElementById('plan-remove-d03-chk');
+            if (d03ChkEl) {
+                d03ChkEl.addEventListener('change', (e) => {
+                    markCustomModified();
+                    FloorplanState.removeGarageDoorD03 = e.target.checked;
+                    rebuildAllPlanArchitecture();
+                    syncFloorplanUI();
+                    updateBudgetTelemetry();
+                });
+            }
+
+            // Cutaway Plan Inspection Buttons (quick top-down oblique check of GF & LGF fixes)
+            document.getElementById('plan-view-wir-btn').addEventListener('click', () => {
+                const vGf = document.getElementById('view-gf');
+                if (vGf) vGf.click();
+                flyTo(new THREE.Vector3(12.2, 13.5, 4.2), new THREE.Vector3(12.6, Y_GF_FFL + 0.8, -2.5));
+            });
+
+            document.getElementById('plan-view-lgf-btn').addEventListener('click', () => {
+                const vLgf = document.getElementById('view-lgf');
+                if (vLgf) vLgf.click();
+                flyTo(new THREE.Vector3(19.5, 11.2, 5.5), new THREE.Vector3(17.8, Y_LGF_SSL + 0.8, -0.5));
+            });
+
+            // Sync with Section 29 Ceiling Height (2.40 / 2.55 / 2.80m) & Skirting Finish clicks
+            document.querySelectorAll('.int-ceil-h-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    setTimeout(() => {
+                        rebuildAccuratePartitions();
+                        rebuildAccurateWetAreasAndFloors();
+                    }, 0);
+                });
+            });
+            document.querySelectorAll('.int-skirtfin-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    setTimeout(() => patchPlanSkirtings(), 0);
+                });
+            });
+
+            // =========================================================================
+            // 31I. NON-DESTRUCTIVE WRAPPERS (HOUSE, TILES, DOORS, BUDGET & JSON)
+            // =========================================================================
+            const _prevBuildHousePlan = buildHouse;
+            const _prevRebuildDynPlan = rebuildDynamicWallsAndOpenings;
+            const _prevRebuildTrimsPlan = rebuildTrimsAndDownpipes;
+            const _prevApplyIntMatsPlan = applyInteriorSurfaceMaterials;
+            const _prevSyncUIPlan = syncAllUIFromState;
+            const _prevGetCatalogPlan = getSelectionsCatalog;
+            const _prevCaptureSnapPlan = captureSpecSnapshot;
+            const _prevApplySnapPlan = applySpecSnapshot;
+            const _prevInitPlan = init;
+
+            buildHouse = function() {
+                _prevBuildHousePlan();
+                rebuildAllPlanArchitecture();
+            };
+
+            rebuildDynamicWallsAndOpenings = function() {
+                _prevRebuildDynPlan();
+                // Keep hole-punched wall tiles around W03 & D10 synced if window/door sizes change
+                rebuildAccurateWetAreasAndFloors();
+            };
+
+            // Override legacy flat-plane tile builder directly so Wall Tile Height toggle never blocks D10/W03
+            rebuildFlooringZones = function() {
+                rebuildAccurateWetAreasAndFloors();
+            };
+
+            rebuildTrimsAndDownpipes = function() {
+                _prevRebuildTrimsPlan();
+                rebuildAllInternalDoors();
+                patchPlanSkirtings();
+            };
+
+            applyInteriorSurfaceMaterials = function() {
+                _prevApplyIntMatsPlan();
+                doorPanelMat.color.copy(materials.interiorTrim.color);
+            };
+
+            syncAllUIFromState = function() {
+                _prevSyncUIPlan();
+                syncFloorplanUI();
+            };
+
+            getSelectionsCatalog = function() {
+                const list = _prevGetCatalogPlan();
+                // Update Vanity & Wet Area note to reflect plan-accurate 1800mm Ensuite & 900mm Lower Vanities
+                const vanIdx = list.findIndex(r => r.item === 'Vanity & Laundry Layout');
+                if (vanIdx >= 0) {
+                    const mount = SelectionsState.vanityMount === 'kick' ? 'Floor Kick' : 'Wall-Hung';
+                    list[vanIdx].selection = `Ensuite 1800mm & Lower Bath 900mm Timberline Vanities (${mount}) + Mirrors`;
+                    list[vanIdx].notes = 'Ensuite: 1800mm vanity NE, 900×900 SHR & WC SW. Lower Bath/L\'dry: SHR -> WC -> 900mm Vanity -> Stacked WM/Dryer.';
+                }
+
+                // Append Internal Doors, Robes & Linen Schedule summary row under Paint, Doors & Trims
+                const trimIdx = list.findIndex(r => r.item === 'Skirting & Architrave Profile');
+                const d03Note = FloorplanState.removeGarageDoorD03
+                    ? 'Internal garage door D03 removed (solid wall to garage).'
+                    : 'Includes D03 870mm solid-core cavity slider to garage.';
+                const doorRow = {
+                    trade: '4. Paint, Doors & Trims',
+                    item: 'Internal Doors, Cavity Sliders & Robes',
+                    selection: 'Hume Accent Hinged (D04, D09, D11, D14) • Cavity Sliders (WIR & D05) • Sliders (D06, D08, D12, D15)',
+                    status: 'STD',
+                    costKey: null,
+                    notes: `${d03Note} Entry linen D06 (2325mm), LGF linen D08 (1875mm), Bed 2/3 robes D12/D15 (1675mm).`
+                };
+                if (trimIdx >= 0) list.splice(trimIdx + 1, 0, doorRow);
+                else list.push(doorRow);
+
+                return list;
+            };
+
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureSnapPlan();
+                snap.accurateFloorplan = { ...FloorplanState };
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                if (snap && snap.accurateFloorplan) {
+                    Object.assign(FloorplanState, snap.accurateFloorplan);
+                }
+                _prevApplySnapPlan(snap, preserveQuotes);
+                rebuildAllPlanArchitecture();
+                InteriorRegistry.rebuildRoom('ensuite');
+                InteriorRegistry.rebuildRoom('lowerBathLaundry');
+                InteriorRegistry.rebuildRoom('kidsBedrooms');
+                syncFloorplanUI();
+            };
+
+            init = function() {
+                _prevInitPlan();
+                rebuildAllPlanArchitecture();
+                InteriorRegistry.rebuildRoom('ensuite');
+                InteriorRegistry.rebuildRoom('lowerBathLaundry');
+                InteriorRegistry.rebuildRoom('kidsBedrooms');
+                syncFloorplanUI();
+                updateBudgetTelemetry();
+            };
+        })();
+
         window.onload = () => {
             init();
             animate();
