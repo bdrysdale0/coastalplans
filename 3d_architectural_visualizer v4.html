@@ -6609,7 +6609,2922 @@
                     syncAllUIFromState();
                 });
             }
-        })();        
+        })();
+        
+// =========================================================================
+        // 26. DROP-IN MODULE: SOLAR PV, BATTERY & ESSENTIAL ENERGY / AMBER BILLS
+        // Paste Section 1 + Section 2 immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initSolarEnergyPlugin() {
+            const PANEL_W = 0.44; // 440W N-type bifacial module (1.76m x 1.13m)
+            const PANEL_L = 1.76;
+            const PANEL_S = 1.13;
+            const PANEL_GAP = 0.06;
+
+            // Representative 15th-of-month day-of-year, days per month & Lilli Pilli coastal clear-sky/temp derate
+            const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const MONTH_DOYS  = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349];
+            const MONTH_DAYS  = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            // Calibrated to Eurobodalla / Batemans Bay ~4.0 kWh/kW/day avg net AC yield (incl. coastal cloud & temp)
+            const MONTH_WEATHER = [0.80, 0.78, 0.77, 0.79, 0.81, 0.79, 0.82, 0.84, 0.83, 0.80, 0.78, 0.80];
+            // Seasonal HVAC multiplier (summer cooling Dec-Feb, winter heating Jun-Aug)
+            const MONTH_HVAC    = [1.35, 1.30, 1.05, 0.85, 1.05, 1.35, 1.45, 1.30, 0.95, 0.85, 1.00, 1.25];
+            // Typical South Coast NSW Airbnb occupancy % per month
+            const DEFAULT_AIRBNB_OCC = [92, 72, 62, 70, 42, 35, 40, 42, 58, 68, 72, 88];
+
+            // FY2026-27 Essential Energy & Amber Electric NSW Tariff Presets (all editable in UI)
+            const TARIFF_PRESETS = {
+                ee_sunsoaker: {
+                    name: 'Essential Energy — Sun Soaker TOU (BLNRSS2)',
+                    short: 'EE Sun Soaker',
+                    supplyDay: 1.75,      // $/day incl. GST
+                    monthlySub: 0,        // $/month retailer subscription
+                    peakImport: 0.41,     // $/kWh (7am-10am & 3pm-10pm daily)
+                    offpeakImport: 0.238, // $/kWh (10am-3pm sun-soak & 10pm-7am)
+                    middayImport: 0.238,  // $/kWh (10am-3pm)
+                    flatFit: 0.05,        // $/kWh (IPART 26-27 benchmark 3.4-6.5c)
+                    peakFit: 0.05,        // $/kWh (5pm-8pm export)
+                    middayExportFee: 0,   // $/kWh
+                    freeWindow: false,
+                    smartShift: false
+                },
+                amber: {
+                    name: 'Amber Electric — Essential Energy (BLNRSS2 + BLNREX2)',
+                    short: 'Amber + SmartShift',
+                    supplyDay: 2.03,      // $/day (147.04c network + 37.42c metering ex GST * 1.1)
+                    monthlySub: 25.00,    // $/month Amber subscription
+                    peakImport: 0.46,     // $/kWh avg wholesale + peak network (7-10am, 3-10pm)
+                    offpeakImport: 0.20,  // $/kWh avg overnight wholesale + off-peak network
+                    middayImport: 0.12,   // $/kWh avg midday wholesale + off-peak network (10am-3pm)
+                    flatFit: 0.035,       // $/kWh shoulder/morning wholesale avg
+                    peakFit: 0.36,        // $/kWh (5pm-8pm wholesale + 11.72c BLNREX2 export reward)
+                    middayExportFee: 0.009, // 0.83c ex GST export charge >7.5kWh/day (SmartShift curtails negative)
+                    freeWindow: false,
+                    smartShift: true
+                },
+                ee_sharer: {
+                    name: 'Essential Energy — Solar Sharer (Free 11am–2pm)',
+                    short: 'EE Solar Sharer',
+                    supplyDay: 1.78,
+                    monthlySub: 0,
+                    peakImport: 0.46,
+                    offpeakImport: 0.27,
+                    middayImport: 0.00,   // Free 11am-2pm up to 24 kWh/day
+                    flatFit: 0.045,
+                    peakFit: 0.045,
+                    middayExportFee: 0,
+                    freeWindow: true,
+                    smartShift: false
+                },
+                ee_flat: {
+                    name: 'Essential Energy — Flat Rate Standing/Market',
+                    short: 'EE Flat Rate',
+                    supplyDay: 1.65,
+                    monthlySub: 0,
+                    peakImport: 0.36,
+                    offpeakImport: 0.36,
+                    middayImport: 0.36,
+                    flatFit: 0.05,
+                    peakFit: 0.05,
+                    middayExportFee: 0,
+                    freeWindow: false,
+                    smartShift: false
+                }
+            };
+
+            const SolarState = {
+                targetKw: 13.2,          // Default 13.2 kW (30 x 440W panels)
+                batteryKwh: 13.5,        // Default 13.5 kWh battery
+                inverterKw: 10.0,        // 10kW 3-phase hybrid inverter
+                exportLimitKw: 15.0,     // 15kW 3-phase Essential Energy export cap (or 5kW 1-phase)
+                tariffKey: 'ee_sunsoaker',
+                rates: { ...TARIFF_PRESETS.ee_sunsoaker },
+                usageMode: 'airbnb',     // 'regular' | 'airbnb' | 'hybrid'
+                airbnbOccScale: 1.0,     // Multiplier on South Coast monthly occupancy curve
+                regularDailyKwh: 22.0,   // Regular household avg kWh/day (excl. EV)
+                airbnbOccKwh: 29.0,      // Occupied Airbnb day (guests + laundry turnover + AC)
+                airbnbVacKwh: 3.2,       // Vacant standby day (fridge, Wi-Fi, tank pump)
+                evEnabled: true,
+                evWeeklyKwh: 70,         // ~400 km/wk (or guest EV top-ups)
+                evChargerKw: 7.0,        // 7kW or 11kW
+                evStrategy: 'solar_soak',// 'solar_soak' | 'offpeak' | 'evening'
+                activePlanes: { nw: true, se: true, ne: true, sw: false },
+                disabledPanelIds: new Set(),
+                panelEditMode: false,
+                useRealShading: true,
+                selectedMonth: 5,        // Default June (0-indexed) or synced from daySlider
+                solarQuoteCost: 14500,   // Editable AUD quote for 13.2kW solar + 3-ph inverter
+                batteryQuoteCost: 11800  // Editable AUD quote for 13.5kWh battery (post-rebate est.)
+            };
+
+            // 3D Materials & Layer Groups for Solar Panels & Battery Hardware
+            function createSolarCellTexture() {
+                const c = document.createElement('canvas');
+                c.width = 256; c.height = 512;
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#0c162b';
+                ctx.fillRect(0, 0, 256, 512);
+                // Half-cut mono N-type cells with subtle silver busbars
+                const cols = 6, rows = 12;
+                const cw = 256 / cols, ch = 512 / rows;
+                for (let r = 0; r < rows; r++) {
+                    for (let col = 0; col < cols; col++) {
+                        ctx.fillStyle = (r + col) % 2 === 0 ? '#11203d' : '#0f1c36';
+                        ctx.fillRect(col * cw + 2, r * ch + 2, cw - 4, ch - 4);
+                    }
+                }
+                ctx.strokeStyle = 'rgba(148,163,184,0.28)';
+                ctx.lineWidth = 1.5;
+                for (let col = 1; col < cols; col++) {
+                    ctx.beginPath(); ctx.moveTo(col * cw, 0); ctx.lineTo(col * cw, 512); ctx.stroke();
+                }
+                for (let r = 1; r < rows; r++) {
+                    ctx.beginPath(); ctx.moveTo(0, r * ch); ctx.lineTo(256, r * ch); ctx.stroke();
+                }
+                ctx.fillStyle = 'rgba(203,213,225,0.45)';
+                ctx.fillRect(0, 254, 256, 4); // Half-cut center split bus
+                const t = new THREE.CanvasTexture(c);
+                t.colorSpace = THREE.SRGBColorSpace;
+                return t;
+            }
+
+            const solarMats = {
+                cell: new THREE.MeshPhysicalMaterial({
+                    map: createSolarCellTexture(),
+                    roughness: 0.14,
+                    metalness: 0.32,
+                    clearcoat: 0.85,
+                    clearcoatRoughness: 0.12
+                }),
+                cellDisabled: new THREE.MeshStandardMaterial({
+                    color: 0x334155,
+                    transparent: true,
+                    opacity: 0.22,
+                    roughness: 0.8
+                }),
+                frame: new THREE.MeshStandardMaterial({ color: 0x181c22, roughness: 0.35, metalness: 0.65 }),
+                rail: new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.4, metalness: 0.75 }),
+                battBody: new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.28, metalness: 0.15 }),
+                battSide: new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.45, metalness: 0.4 }),
+                battLed: new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x10b981, emissiveIntensity: 1.2 })
+            };
+
+            const solarPanelsGroup = new THREE.Group();
+            solarPanelsGroup.name = 'solar-panels-group';
+            const batteryHardwareGroup = new THREE.Group();
+            batteryHardwareGroup.name = 'battery-hardware-group';
+            groundGroup.add(batteryHardwareGroup);
+
+            // =========================================================================
+            // 26A. ROOF-AWARE PANEL SLOT GENERATOR (REV 1/2 SKILLION vs REV 3/4 HIP)
+            // =========================================================================
+            let activePanelMeta = []; // [{ id, plane, pos, normal, enabled }]
+
+            function computePlaneSlotsForRevision(rev) {
+                const slots = [];
+                const isHip = (rev === 3 || rev === 4);
+
+                if (!isHip) {
+                    // --- REV 1 & REV 2: SPLIT SKILLION (NW 10° + SE 6°) ---
+                    // 1. Main NW Skillion Plane (faces -Z, az 319.07°, pitch 10°)
+                    const nwNormal = new THREE.Vector3(0, Math.cos(MAIN_PITCH), -Math.sin(MAIN_PITCH)).normalize();
+                    const nwCols = 10; // 10 x 1.19m = 11.9m along X (8.2m..21.1m)
+                    const nwRows = 3;  // 3 x 1.82m = 5.46m along Z (-4.75m..+0.85m)
+                    const pitchX = PANEL_S + PANEL_GAP; // 1.19m (portrait along X)
+                    const pitchZ = (PANEL_L + PANEL_GAP) * Math.cos(MAIN_PITCH);
+                    for (let r = 0; r < nwRows; r++) {
+                        const z = -4.20 + r * pitchZ;
+                        for (let c = 0; c < nwCols; c++) {
+                            const x = 8.95 + c * pitchX;
+                            const ySurf = mainRoofBottomY(z) + (0.24 + 0.03) / Math.cos(MAIN_PITCH) + 0.085;
+                            slots.push({
+                                id: `sk-nw-${r}-${c}`,
+                                plane: 'nw',
+                                x, y: ySurf, z,
+                                dimX: PANEL_S, dimZ: PANEL_L,
+                                rotX: -MAIN_PITCH, rotY: 0, rotZ: 0,
+                                normal: nwNormal.clone(),
+                                priority: 10 + r * 20 + c
+                            });
+                        }
+                    }
+
+                    // 2. Exposed SE Skillion Plane (faces +Z, az 139.07°, pitch 6°, clear of clerestory ridge)
+                    const seNormal = new THREE.Vector3(0, Math.cos(SE_PITCH), Math.sin(SE_PITCH)).normalize();
+                    const seCols = 6; // Landscape along X (1.82m pitch -> 10.9m)
+                    const seRows = 2; // 2 rows along exposed Z (2.0m..4.45m)
+                    const sePitchX = PANEL_L + PANEL_GAP;
+                    const sePitchZ = (PANEL_S + PANEL_GAP) * Math.cos(SE_PITCH);
+                    for (let r = 0; r < seRows; r++) {
+                        const z = 2.55 + r * sePitchZ;
+                        for (let c = 0; c < seCols; c++) {
+                            const x = 10.05 + c * sePitchX;
+                            const ySurf = seRoofBottomY(z) + (0.22 + 0.03) / Math.cos(SE_PITCH) + 0.085;
+                            slots.push({
+                                id: `sk-se-${r}-${c}`,
+                                plane: 'se',
+                                x, y: ySurf, z,
+                                dimX: PANEL_L, dimZ: PANEL_S,
+                                rotX: SE_PITCH, rotY: 0, rotZ: 0,
+                                normal: seNormal.clone(),
+                                priority: 200 + r * 20 + c
+                            });
+                        }
+                    }
+                } else {
+                    // --- REV 3 & REV 4: TRADITIONAL 22.5° HIP ROOF (NW, NE, SE, SW PLANES) ---
+                    const HIP_PITCH = 22.5 * Math.PI / 180;
+                    const HIP_TAN = Math.tan(HIP_PITCH);
+                    const Y_EAVE_TOP = Y_GF_CEIL + 0.14;
+                    const zNW = Z_NW - 0.45;              // -5.33m
+                    const zSE = Z_SE + 0.45;              // +5.03m
+                    const xFrontBed = X_FRONT_BED1 - 0.45;// 7.55m
+                    const xFrontGar = X_FRONT_GARAGE - 0.45;// 8.40m
+                    const xRearMain = X_REAR_WALL + 0.45; // 21.86m
+                    const rowStepZ = (PANEL_S + PANEL_GAP) * Math.cos(HIP_PITCH); // 1.10m horizontal
+                    const colStep = PANEL_L + PANEL_GAP; // 1.82m landscape
+
+                    // 1. NW Main Hip Slope (faces -Z, az 319.07°, pitch 22.5°) — Highest Priority
+                    const nwNormal = new THREE.Vector3(0, Math.cos(HIP_PITCH), -Math.sin(HIP_PITCH)).normalize();
+                    for (let r = 0; r < 4; r++) {
+                        const d = 0.88 + r * rowStepZ;
+                        const z = zNW + d;
+                        const xMin = xFrontBed + d + 0.72;
+                        const xMax = xRearMain - d - 0.72;
+                        const span = xMax - xMin;
+                        const count = Math.floor(span / colStep);
+                        if (count <= 0) continue;
+                        const startX = (xMin + xMax) / 2 - ((count - 1) * colStep) / 2;
+                        const ySurf = Y_EAVE_TOP + d * HIP_TAN + 0.10;
+                        for (let c = 0; c < count; c++) {
+                            slots.push({
+                                id: `hip-nw-${r}-${c}`,
+                                plane: 'nw',
+                                x: startX + c * colStep, y: ySurf, z,
+                                dimX: PANEL_L, dimZ: PANEL_S,
+                                rotX: -HIP_PITCH, rotY: 0, rotZ: 0,
+                                normal: nwNormal.clone(),
+                                priority: 10 + r * 20 + c
+                            });
+                        }
+                    }
+
+                    // 2. NE Rear Hip Slope (faces +X, az 49.07°, pitch 22.5°) — Great Morning/Noon Sun!
+                    const neNormal = new THREE.Vector3(Math.sin(HIP_PITCH), Math.cos(HIP_PITCH), 0).normalize();
+                    const dNE = 3.92; // x = 17.94 (cleanly above rear alfresco hip intersection at x = 18.81)
+                    const xNE = xRearMain - dNE;
+                    const yNE = Y_EAVE_TOP + dNE * HIP_TAN + 0.10;
+                    const zSpanNE = (dNE - 0.65) * 2;
+                    const neCount = Math.max(1, Math.floor(zSpanNE / colStep));
+                    const neStartZ = -0.15 - ((neCount - 1) * colStep) / 2;
+                    for (let c = 0; c < neCount; c++) {
+                        slots.push({
+                            id: `hip-ne-0-${c}`,
+                            plane: 'ne',
+                            x: xNE, y: yNE, z: neStartZ + c * colStep,
+                            dimX: PANEL_S, dimZ: PANEL_L,
+                            rotX: 0, rotY: 0, rotZ: -HIP_PITCH,
+                            normal: neNormal.clone(),
+                            priority: 95 + c
+                        });
+                    }
+
+                    // 3. SE Main Hip Slope (faces +Z, az 139.07°, pitch 22.5°)
+                    const seNormal = new THREE.Vector3(0, Math.cos(HIP_PITCH), Math.sin(HIP_PITCH)).normalize();
+                    for (let r = 0; r < 4; r++) {
+                        const d = 0.88 + r * rowStepZ;
+                        const z = zSE - d;
+                        const xMin = xFrontGar + d + 0.72;
+                        const xMax = xRearMain - d - 0.72;
+                        const span = xMax - xMin;
+                        const count = Math.floor(span / colStep);
+                        if (count <= 0) continue;
+                        const startX = (xMin + xMax) / 2 - ((count - 1) * colStep) / 2;
+                        const ySurf = Y_EAVE_TOP + d * HIP_TAN + 0.10;
+                        for (let c = 0; c < count; c++) {
+                            slots.push({
+                                id: `hip-se-${r}-${c}`,
+                                plane: 'se',
+                                x: startX + c * colStep, y: ySurf, z,
+                                dimX: PANEL_L, dimZ: PANEL_S,
+                                rotX: HIP_PITCH, rotY: 0, rotZ: 0,
+                                normal: seNormal.clone(),
+                                priority: 140 + r * 20 + c
+                            });
+                        }
+                    }
+
+                    // 4. SW Front Hip Slope (faces -X, az 229.07°, pitch 22.5° — Optional Late Afternoon)
+                    const swNormal = new THREE.Vector3(-Math.sin(HIP_PITCH), Math.cos(HIP_PITCH), 0).normalize();
+                    if (rev === 4) {
+                        // Unified Rev 4 front hip (xFrontBed=7.55, zNW=-5.33..1.48, zMid=-1.925)
+                        const dSW = 1.45;
+                        const xSW = xFrontBed + dSW;
+                        const ySW = Y_EAVE_TOP + dSW * HIP_TAN + 0.10;
+                        const swCount = 2;
+                        for (let c = 0; c < swCount; c++) {
+                            slots.push({
+                                id: `hip-sw-0-${c}`,
+                                plane: 'sw',
+                                x: xSW, y: ySW, z: -1.925 + (c - 0.5) * colStep,
+                                dimX: PANEL_S, dimZ: PANEL_L,
+                                rotX: 0, rotY: 0, rotZ: HIP_PITCH,
+                                normal: swNormal.clone(),
+                                priority: 300 + c
+                            });
+                        }
+                    } else {
+                        // Rev 3 main SW hip above portico intersection
+                        const dSW = 3.92;
+                        const xSW = xFrontGar + dSW;
+                        const ySW = Y_EAVE_TOP + dSW * HIP_TAN + 0.10;
+                        for (let c = 0; c < 3; c++) {
+                            slots.push({
+                                id: `hip-sw-0-${c}`,
+                                plane: 'sw',
+                                x: xSW, y: ySW, z: -0.15 + (c - 1) * colStep,
+                                dimX: PANEL_S, dimZ: PANEL_L,
+                                rotX: 0, rotY: 0, rotZ: HIP_PITCH,
+                                normal: swNormal.clone(),
+                                priority: 300 + c
+                            });
+                        }
+                    }
+                }
+
+                slots.sort((a, b) => a.priority - b.priority);
+                return slots;
+            }
+
+            // Build 3D Solar Panels on Active Roof Group
+            function rebuildSolarPanels3D() {
+                clearGroup(solarPanelsGroup);
+                if (solarPanelsGroup.parent !== roofGroup) {
+                    roofGroup.add(solarPanelsGroup);
+                }
+
+                const allSlots = computePlaneSlotsForRevision(currentRevision);
+                const enabledPlaneSlots = allSlots.filter(s => SolarState.activePlanes[s.plane]);
+                const targetCount = Math.round(SolarState.targetKw / PANEL_W);
+
+                activePanelMeta = [];
+                let placed = 0;
+
+                enabledPlaneSlots.forEach(slot => {
+                    const manuallyOff = SolarState.disabledPanelIds.has(slot.id);
+                    const isWithinTarget = placed < targetCount;
+                    const isActive = isWithinTarget && !manuallyOff;
+                    if (isWithinTarget) placed++;
+
+                    // Show active panels always; in Panel Edit Mode show ghosted slots too so user can click to toggle!
+                    if (!isActive && !SolarState.panelEditMode) return;
+
+                    const g = new THREE.Group();
+                    g.position.set(slot.x, slot.y, slot.z);
+                    g.rotation.set(slot.rotX, slot.rotY, slot.rotZ, 'YXZ');
+
+                    // Anodised black frame + N-type solar cell surface
+                    const frame = new THREE.Mesh(
+                        new THREE.BoxGeometry(slot.dimX, 0.036, slot.dimZ),
+                        isActive ? solarMats.frame : solarMats.cellDisabled
+                    );
+                    frame.castShadow = isActive;
+                    frame.receiveShadow = true;
+                    frame.userData.solarPanelId = slot.id;
+                    g.add(frame);
+
+                    if (isActive) {
+                        const cell = new THREE.Mesh(
+                            new THREE.BoxGeometry(slot.dimX - 0.04, 0.012, slot.dimZ - 0.04),
+                            solarMats.cell
+                        );
+                        cell.position.y = 0.016;
+                        cell.userData.solarPanelId = slot.id;
+                        g.add(cell);
+
+                        // Subtle aluminium mounting rails under module
+                        [-slot.dimZ * 0.28, slot.dimZ * 0.28].forEach(rz => {
+                            const rail = new THREE.Mesh(new THREE.BoxGeometry(slot.dimX + 0.04, 0.025, 0.03), solarMats.rail);
+                            rail.position.set(0, -0.032, rz);
+                            g.add(rail);
+                        });
+                    }
+
+                    solarPanelsGroup.add(g);
+                    if (isActive) {
+                        activePanelMeta.push({
+                            id: slot.id,
+                            plane: slot.plane,
+                            pos: new THREE.Vector3(slot.x, slot.y + 0.08, slot.z),
+                            normal: slot.normal
+                        });
+                    }
+                });
+            }
+
+            // Build 3D Wall-Mounted Battery Stack & 3-Phase Hybrid Inverter (Garage SE Wall)
+            function rebuildBatteryHardware3D() {
+                clearGroup(batteryHardwareGroup);
+                const y = Y_GAR_SSL;
+                const seWallZ = Z_SE - 0.16;
+
+                // 3-Phase Hybrid Solar Inverter (if solar installed)
+                if (SolarState.targetKw > 0) {
+                    const inv = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.56, 0.22), solarMats.battBody);
+                    inv.position.set(12.25, y + 1.48, seWallZ - 0.11);
+                    inv.castShadow = true;
+                    const invTrim = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.12, 0.23), solarMats.battSide);
+                    invTrim.position.set(12.25, y + 1.72, seWallZ - 0.11);
+                    const led = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.02), solarMats.battLed);
+                    led.position.set(12.25, y + 1.56, seWallZ - 0.225);
+                    batteryHardwareGroup.add(inv, invTrim, led);
+                }
+
+                // Battery Units (1 unit per ~13.5kWh, stacked cleanly beside inverter)
+                if (SolarState.batteryKwh > 0) {
+                    const units = SolarState.batteryKwh <= 14 ? 1 : (SolarState.batteryKwh <= 28 ? 2 : 3);
+                    for (let i = 0; i < units; i++) {
+                        const bx = 12.82 - i * 0.72;
+                        const bz = seWallZ - 0.10;
+                        const box = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.12, 0.16), solarMats.battBody);
+                        box.position.set(bx, y + 0.74, bz);
+                        box.castShadow = true;
+                        box.receiveShadow = true;
+                        const side = new THREE.Mesh(new THREE.BoxGeometry(0.64, 1.14, 0.06), solarMats.battSide);
+                        side.position.set(bx, y + 0.74, bz + 0.05);
+                        const glow = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.45, 0.02), solarMats.battLed);
+                        glow.position.set(bx - 0.26, y + 0.82, bz - 0.085);
+                        batteryHardwareGroup.add(box, side, glow);
+                    }
+                }
+            }
+
+            // =========================================================================
+            // 26B. PHYSICS-BASED SOLAR YIELD, REAL SHADING & ENERGY/BILL SIMULATION
+            // =========================================================================
+            const solarShadeRay = new THREE.Raycaster();
+            let lastSimResult = null;
+
+            function getHourlyHouseLoadShape(hour, mode, hvacMult, dailyTotal) {
+                // Normalized 24-hour shape weights (sum = 1.0)
+                let w;
+                if (mode === 'vacant') {
+                    // Flat standby: fridge cycling + Wi-Fi + security + tank pump
+                    w = [0.04,0.04,0.04,0.04,0.04,0.04,0.04,0.042,0.043,0.043,0.044,0.044,0.044,0.044,0.044,0.043,0.043,0.042,0.041,0.041,0.04,0.04,0.04,0.04];
+                } else if (mode === 'airbnb_occ') {
+                    // Airbnb occupied: 10am-2pm linen washer/dryer turnover + strong 5pm-10pm dining/AC/showers
+                    w = [0.022,0.020,0.019,0.019,0.020,0.023,0.032,0.046,0.050,0.045,0.058,0.062,0.056,0.048,0.040,0.042,0.052,0.068,0.076,0.070,0.056,0.038,0.022,0.016];
+                } else {
+                    // Regular coastal family living (WFH + induction + evening Daikin AC)
+                    w = [0.024,0.022,0.021,0.021,0.022,0.026,0.038,0.054,0.048,0.038,0.036,0.038,0.040,0.038,0.036,0.042,0.056,0.074,0.080,0.072,0.056,0.040,0.024,0.014];
+                }
+                const hvacBias = (hour >= 16 && hour <= 21) || (hour >= 6 && hour <= 8) ? (0.55 + 0.45 * hvacMult) : (0.82 + 0.18 * hvacMult);
+                return dailyTotal * w[hour] * hvacBias;
+            }
+
+            function getHourlyEvLoad(hour, dailyEvKwh, strategy, chargerKw, surplusSolarKw) {
+                if (!SolarState.evEnabled || dailyEvKwh <= 0) return 0;
+                if (strategy === 'solar_soak') {
+                    // Diverts surplus rooftop solar (9am-4pm) up to charger limit
+                    if (hour < 9 || hour > 16) return 0;
+                    return Math.min(chargerKw, Math.max(0, surplusSolarKw));
+                } else if (strategy === 'offpeak') {
+                    // Charges during 11am-2pm sun-soak/free window or 11pm-4am off-peak
+                    const windowHrs = SolarState.rates.freeWindow ? [11, 12, 13] : [11, 12, 13, 14, 23, 0, 1];
+                    if (!windowHrs.includes(hour)) return 0;
+                    return Math.min(chargerKw, dailyEvKwh / windowHrs.length);
+                } else {
+                    // Evening plug-in 6pm-9pm (worst-case peak draw)
+                    if (hour < 18 || hour > 20) return 0;
+                    return Math.min(chargerKw, dailyEvKwh / 3);
+                }
+            }
+
+            function getTariffForHour(hour, rates) {
+                const isPeak = (hour >= 7 && hour < 10) || (hour >= 15 && hour < 22);
+                const isMidday = (hour >= 10 && hour < 15);
+                const isFreeWin = rates.freeWindow && (hour >= 11 && hour < 14);
+                const isPeakExport = (hour >= 17 && hour < 20);
+
+                let importRate = rates.offpeakImport;
+                if (isFreeWin) importRate = 0.0;
+                else if (isPeak) importRate = rates.peakImport;
+                else if (isMidday) importRate = rates.middayImport;
+
+                let exportRate = rates.flatFit;
+                if (isPeakExport) exportRate = rates.peakFit;
+                else if (isMidday && rates.smartShift) exportRate = 0.01; // Low midday wholesale
+
+                return { importRate, exportRate, isPeak, isMidday, isPeakExport, isFreeWin };
+            }
+
+            // Compute plane-level hourly AC kW for a given revision's panels & shade blockers
+            function computeDaySolarProfile(doy, monthIdx, panelList, shadeBlockers) {
+                const hourlyKw = new Array(24).fill(0);
+                if (!panelList || panelList.length === 0) return hourlyKw;
+
+                // Group panels by roof plane to keep raycasting ultra-fast
+                const byPlane = {};
+                panelList.forEach(p => {
+                    if (!byPlane[p.plane]) byPlane[p.plane] = [];
+                    byPlane[p.plane].push(p);
+                });
+
+                // Pick up to 3 representative probe points per active plane for real neighbour + tree shade
+                const planeProbes = {};
+                Object.keys(byPlane).forEach(pl => {
+                    const arr = byPlane[pl];
+                    const idxs = arr.length <= 3 ? arr.map((_, i) => i) : [0, Math.floor(arr.length / 2), arr.length - 1];
+                    planeProbes[pl] = idxs.map(i => arr[i]);
+                });
+
+                const weather = MONTH_WEATHER[monthIdx];
+                const sysEff = 0.84; // Inverter + wiring + thermal + soiling net factor
+
+                for (let h = 0; h < 24; h++) {
+                    const s = calcSunVec(doy, h + 0.5);
+                    if (s.alt <= 0.02) continue;
+
+                    const sunPos = new THREE.Vector3(s.x, s.y, s.z);
+                    const sunDir = new THREE.Vector3(s.x - 16, s.y, s.z).normalize();
+                    const sinAlt = Math.sin(s.alt);
+                    // Air mass clear-sky GHI model (kW/m^2 normalized to STC 1.0 kW/m^2)
+                    const airMass = 1 / Math.max(0.12, sinAlt);
+                    const dni = 0.94 * Math.pow(0.76, Math.pow(airMass, 0.678));
+                    const dhi = 0.14 * sinAlt;
+
+                    let totalAcKw = 0;
+                    Object.keys(byPlane).forEach(pl => {
+                        const arr = byPlane[pl];
+                        const normal = arr[0].normal;
+                        const cosAOI = Math.max(0, normal.dot(sunDir));
+
+                        // Real 3D shade fraction against Lot 3 / Lot 5 & planted gum trees
+                        let shadeFrac = 0;
+                        if (SolarState.useRealShading && shadeBlockers.length > 0) {
+                            let shadedHits = 0;
+                            const probes = planeProbes[pl];
+                            for (let k = 0; k < probes.length; k++) {
+                                solarShadeRay.set(probes[k].pos, sunDir);
+                                const hits = solarShadeRay.intersectObjects(shadeBlockers, false);
+                                if (hits.length > 0) shadedHits++;
+                            }
+                            shadeFrac = shadedHits / probes.length;
+                        }
+
+                        // Direct beam attenuated by shade; diffuse sky still contributes ~80% under partial shade
+                        const directPoa = dni * cosAOI * (1 - shadeFrac * 0.88);
+                        const diffusePoa = dhi * (0.5 + 0.5 * normal.y) * (1 - shadeFrac * 0.20);
+                        const poa = Math.min(1.08, (directPoa + diffusePoa) * weather);
+                        totalAcKw += arr.length * PANEL_W * poa * sysEff;
+                    });
+
+                    hourlyKw[h] = Math.min(SolarState.inverterKw, totalAcKw);
+                }
+                return hourlyKw;
+            }
+
+            // Simulate 24-hour energy dispatch & billing for one representative day
+            function simulateSingleDay(solarHourlyKw, loadType, monthIdx, evDailyKwh) {
+                const rates = SolarState.rates;
+                const hvacMult = MONTH_HVAC[monthIdx];
+                const battCap = SolarState.batteryKwh;
+                const battMin = battCap * 0.10;
+                const battMaxRate = battCap > 0 ? Math.max(5.0, battCap * 0.42) : 0;
+                const effChg = 0.95, effDis = 0.95; // ~90% round-trip
+                let soc = battCap > 0 ? battCap * 0.25 : 0;
+                let evRemaining = SolarState.evEnabled ? evDailyKwh : 0;
+                let middayExportAccum = 0;
+                let freeWinAccum = 0;
+
+                const dailyTotalBase = loadType === 'vacant'
+                    ? SolarState.airbnbVacKwh
+                    : loadType === 'airbnb_occ'
+                        ? SolarState.airbnbOccKwh
+                        : SolarState.regularDailyKwh;
+
+                const hours = [];
+                let sumSolar = 0, sumLoad = 0, sumEv = 0, sumSelf = 0, sumBattShifted = 0;
+                let sumImport = 0, sumExport = 0, sumCurtailed = 0;
+                let energyCost = 0, noSolarCost = 0;
+
+                for (let h = 0; h < 24; h++) {
+                    const pv = solarHourlyKw[h];
+                    const houseLoad = getHourlyHouseLoadShape(h, loadType, hvacMult, dailyTotalBase);
+                    const t = getTariffForHour(h, rates);
+
+                    // Compute EV load for this hour
+                    let evDraw = 0;
+                    if (evRemaining > 0.01) {
+                        const surplusForEv = Math.max(0, pv - houseLoad);
+                        if (SolarState.evStrategy === 'solar_soak') {
+                            evDraw = Math.min(evRemaining, getHourlyEvLoad(h, evRemaining, 'solar_soak', SolarState.evChargerKw, surplusForEv));
+                            // Top up any shortfall overnight off-peak so weekly km target is always met
+                            if (h >= 22 && evRemaining > 0.1) {
+                                evDraw = Math.min(evRemaining, SolarState.evChargerKw, evRemaining / Math.max(1, 24 - h));
+                            }
+                        } else {
+                            evDraw = Math.min(evRemaining, getHourlyEvLoad(h, evDailyKwh, SolarState.evStrategy, SolarState.evChargerKw, surplusForEv));
+                        }
+                        evRemaining = Math.max(0, evRemaining - evDraw);
+                    }
+
+                    const totalLoad = houseLoad + evDraw;
+                    // Baseline bill without solar/battery (same house + EV load)
+                    let baseImpRate = t.importRate;
+                    if (t.isFreeWin && freeWinAccum >= 24) baseImpRate = rates.offpeakImport;
+                    noSolarCost += totalLoad * baseImpRate;
+
+                    // 1. Direct solar self-consumption
+                    const directSelf = Math.min(pv, totalLoad);
+                    let remSolar = pv - directSelf;
+                    let remLoad = totalLoad - directSelf;
+                    let battDelta = 0; // + = charging, - = discharging
+                    let gridImp = 0, gridExp = 0, curtailed = 0;
+
+                    // 2. Surplus solar -> charge battery first, then export (or curtail on negative Amber midday)
+                    if (remSolar > 0) {
+                        if (battCap > 0 && soc < battCap) {
+                            const canAccept = Math.min(battMaxRate, (battCap - soc) / effChg);
+                            const chg = Math.min(remSolar, canAccept);
+                            soc += chg * effChg;
+                            battDelta += chg;
+                            remSolar -= chg;
+                        }
+                        if (remSolar > 0) {
+                            // Export cap (15kW 3-phase or 5kW 1-phase)
+                            const maxExp = SolarState.exportLimitKw;
+                            if (remSolar > maxExp) {
+                                curtailed += (remSolar - maxExp);
+                                remSolar = maxExp;
+                            }
+                            // Amber SmartShift curtails midday excess above 7.5 kWh/day when export fee applies
+                            if (rates.smartShift && t.isMidday && middayExportAccum >= 7.5 && rates.middayExportFee > 0) {
+                                curtailed += remSolar;
+                            } else {
+                                gridExp += remSolar;
+                                if (t.isMidday) middayExportAccum += remSolar;
+                            }
+                        }
+                    }
+
+                    // 3. Remaining load -> discharge battery (avoid peak & evening import), else import from grid
+                    if (remLoad > 0) {
+                        const shouldDischarge = battCap > 0 && soc > battMin && !t.isFreeWin && (!rates.smartShift || t.isPeak || h >= 17 || h < 7);
+                        if (shouldDischarge) {
+                            const canSupply = Math.min(battMaxRate, (soc - battMin) * effDis);
+                            const dis = Math.min(remLoad, canSupply);
+                            soc -= dis / effDis;
+                            battDelta -= dis;
+                            sumBattShifted += dis;
+                            remLoad -= dis;
+                        }
+                        if (remLoad > 0) {
+                            gridImp += remLoad;
+                        }
+                    }
+
+                    // 4. Smart Grid-to-Battery soak during Free 11am-2pm Solar Sharer window
+                    if (t.isFreeWin && battCap > 0 && soc < battCap * 0.92 && freeWinAccum + gridImp < 24) {
+                        const freeRoom = Math.max(0, 24 - (freeWinAccum + gridImp));
+                        const chg = Math.min(battMaxRate, freeRoom, (battCap * 0.92 - soc) / effChg);
+                        if (chg > 0) {
+                            soc += chg * effChg;
+                            battDelta += chg;
+                            gridImp += chg;
+                        }
+                    }
+
+                    // 5. Amber SmartShift Evening Peak Export (5pm-8pm BLNREX2 reward down to 22% reserve)
+                    if (rates.smartShift && t.isPeakExport && battCap > 0 && soc > battCap * 0.22) {
+                        const availExp = Math.min(battMaxRate - Math.max(0, -battDelta), (soc - battCap * 0.22) * effDis, SolarState.exportLimitKw - gridExp);
+                        if (availExp > 0.1) {
+                            const peakExp = availExp * 0.65; // Spread across 5-8pm window
+                            soc -= peakExp / effDis;
+                            battDelta -= peakExp;
+                            gridExp += peakExp;
+                            sumBattShifted += peakExp;
+                        }
+                    }
+
+                    if (t.isFreeWin) freeWinAccum += gridImp;
+
+                    // Hourly Dollar Cost (Import - Export + any midday export network charge)
+                    const effImpRate = (t.isFreeWin && freeWinAccum <= 24) ? 0 : t.importRate;
+                    let expCredit = gridExp * t.exportRate;
+                    if (t.isMidday && middayExportAccum > 7.5 && rates.middayExportFee > 0) {
+                        const taxable = Math.min(gridExp, middayExportAccum - 7.5);
+                        expCredit -= taxable * rates.middayExportFee;
+                    }
+                    energyCost += (gridImp * effImpRate) - expCredit;
+
+                    sumSolar += pv;
+                    sumLoad += houseLoad;
+                    sumEv += evDraw;
+                    sumSelf += directSelf;
+                    sumImport += gridImp;
+                    sumExport += gridExp;
+                    sumCurtailed += curtailed;
+
+                    hours.push({
+                        h, pv, houseLoad, evDraw, totalLoad,
+                        battDelta, socPct: battCap > 0 ? Math.round((soc / battCap) * 100) : 0,
+                        gridImp, gridExp, curtailed
+                    });
+                }
+
+                const fixedDaily = rates.supplyDay + (rates.monthlySub / 30.4375);
+                return {
+                    hours,
+                    solarKwh: sumSolar,
+                    houseKwh: sumLoad,
+                    evKwh: sumEv,
+                    selfKwh: sumSelf,
+                    battShiftedKwh: sumBattShifted,
+                    importKwh: sumImport,
+                    exportKwh: sumExport,
+                    curtailedKwh: sumCurtailed,
+                    netCostDay: energyCost + fixedDaily,
+                    noSolarCostDay: noSolarCost + fixedDaily
+                };
+            }
+
+            // Full 12-Month Simulation Runner
+            function runFullYearSimulation(overridePanelList = null) {
+                const panels = overridePanelList || activePanelMeta;
+                const shadeBlockers = [];
+                if (SolarState.useRealShading) {
+                    if (neighboursGroup.visible) {
+                        neighboursGroup.traverse(o => { if (o.isMesh) shadeBlockers.push(o); });
+                    }
+                    treesGroup.traverse(o => { if (o.isMesh) shadeBlockers.push(o); });
+                }
+
+                const evDailyRegular = SolarState.evEnabled ? (SolarState.evWeeklyKwh / 7) : 0;
+                const monthly = [];
+                let annSolar = 0, annLoad = 0, annEv = 0, annSelf = 0, annBatt = 0, annImp = 0, annExp = 0, annCurt = 0;
+                let annNetBill = 0, annBaseBill = 0;
+
+                for (let m = 0; m < 12; m++) {
+                    const days = MONTH_DAYS[m];
+                    const solarHourly = computeDaySolarProfile(MONTH_DOYS[m], m, panels, shadeBlockers);
+
+                    let daySimDisplay;
+                    let mSolar = 0, mHouse = 0, mEv = 0, mSelf = 0, mBatt = 0, mImp = 0, mExp = 0, mCurt = 0, mNet = 0, mBase = 0;
+
+                    if (SolarState.usageMode === 'regular') {
+                        const d = simulateSingleDay(solarHourly, 'regular', m, evDailyRegular);
+                        daySimDisplay = d;
+                        mSolar = d.solarKwh * days; mHouse = d.houseKwh * days; mEv = d.evKwh * days;
+                        mSelf = d.selfKwh * days; mBatt = d.battShiftedKwh * days;
+                        mImp = d.importKwh * days; mExp = d.exportKwh * days; mCurt = d.curtailedKwh * days;
+                        mNet = d.netCostDay * days; mBase = d.noSolarCostDay * days;
+                    } else if (SolarState.usageMode === 'airbnb') {
+                        const occFrac = THREE.MathUtils.clamp((DEFAULT_AIRBNB_OCC[m] / 100) * SolarState.airbnbOccScale, 0.05, 1.0);
+                        const occDays = days * occFrac;
+                        const vacDays = days - occDays;
+                        const dOcc = simulateSingleDay(solarHourly, 'airbnb_occ', m, evDailyRegular);
+                        const dVac = simulateSingleDay(solarHourly, 'vacant', m, 0);
+                        daySimDisplay = dOcc;
+                        mSolar = dOcc.solarKwh * occDays + dVac.solarKwh * vacDays;
+                        mHouse = dOcc.houseKwh * occDays + dVac.houseKwh * vacDays;
+                        mEv    = dOcc.evKwh * occDays;
+                        mSelf  = dOcc.selfKwh * occDays + dVac.selfKwh * vacDays;
+                        mBatt  = dOcc.battShiftedKwh * occDays + dVac.battShiftedKwh * vacDays;
+                        mImp   = dOcc.importKwh * occDays + dVac.importKwh * vacDays;
+                        mExp   = dOcc.exportKwh * occDays + dVac.exportKwh * vacDays;
+                        mCurt  = dOcc.curtailedKwh * occDays + dVac.curtailedKwh * vacDays;
+                        mNet   = dOcc.netCostDay * occDays + dVac.netCostDay * vacDays;
+                        mBase  = dOcc.noSolarCostDay * occDays + dVac.noSolarCostDay * vacDays;
+                    } else {
+                        // Hybrid: 50% Regular family living + 50% Airbnb holiday let
+                        const occFrac = THREE.MathUtils.clamp((DEFAULT_AIRBNB_OCC[m] / 100) * SolarState.airbnbOccScale, 0.1, 1.0);
+                        const regDays = days * 0.5;
+                        const airOccDays = days * 0.5 * occFrac;
+                        const airVacDays = days * 0.5 * (1 - occFrac);
+                        const dReg = simulateSingleDay(solarHourly, 'regular', m, evDailyRegular);
+                        const dOcc = simulateSingleDay(solarHourly, 'airbnb_occ', m, evDailyRegular * 0.6);
+                        const dVac = simulateSingleDay(solarHourly, 'vacant', m, 0);
+                        daySimDisplay = dReg;
+                        const blend = (fn) => fn(dReg) * regDays + fn(dOcc) * airOccDays + fn(dVac) * airVacDays;
+                        mSolar = blend(x => x.solarKwh); mHouse = blend(x => x.houseKwh); mEv = blend(x => x.evKwh);
+                        mSelf  = blend(x => x.selfKwh);  mBatt  = blend(x => x.battShiftedKwh);
+                        mImp   = blend(x => x.importKwh); mExp  = blend(x => x.exportKwh); mCurt = blend(x => x.curtailedKwh);
+                        mNet   = blend(x => x.netCostDay); mBase = blend(x => x.noSolarCostDay);
+                    }
+
+                    annSolar += mSolar; annLoad += mHouse; annEv += mEv; annSelf += mSelf;
+                    annBatt += mBatt; annImp += mImp; annExp += mExp; annCurt += mCurt;
+                    annNetBill += mNet; annBaseBill += mBase;
+
+                    monthly.push({
+                        month: MONTH_NAMES[m],
+                        solarKwh: mSolar, houseKwh: mHouse, evKwh: mEv,
+                        selfKwh: mSelf, battKwh: mBatt, importKwh: mImp, exportKwh: mExp, curtailedKwh: mCurt,
+                        netBill: mNet, baseBill: mBase,
+                        dayProfile: daySimDisplay
+                    });
+                }
+
+                const totalDemand = annLoad + annEv;
+                const selfSufficiency = totalDemand > 0 ? Math.max(0, Math.min(100, (1 - annImp / totalDemand) * 100)) : 0;
+                const annualSavings = annBaseBill - annNetBill;
+                const systemCost = (panels.length > 0 ? SolarState.solarQuoteCost : 0) + (SolarState.batteryKwh > 0 ? SolarState.batteryQuoteCost : 0);
+                const paybackYrs = annualSavings > 50 ? (systemCost / annualSavings) : Infinity;
+
+                return {
+                    installedKw: Number((panels.length * PANEL_W).toFixed(2)),
+                    panelCount: panels.length,
+                    monthly,
+                    annual: {
+                        solarKwh: annSolar, houseKwh: annLoad, evKwh: annEv,
+                        selfKwh: annSelf, battKwh: annBatt, importKwh: annImp, exportKwh: annExp, curtailedKwh: annCurt,
+                        netBill: annNetBill, baseBill: annBaseBill,
+                        savings: annualSavings, selfSufficiency, systemCost, paybackYrs
+                    }
+                };
+            }
+// =========================================================================
+            // 26C. INJECTED UI: HEADER BUTTON, LIVE TELEMETRY PILL & DASHBOARD MODAL
+            // =========================================================================
+            // Inject print rule for Solar & Bills modal without editing <head>
+            const solarPrintStyle = document.createElement('style');
+            solarPrintStyle.textContent = `
+                @media print {
+                    body.printing-solar #solar-energy-modal,
+                    body.printing-solar #solar-energy-modal * { visibility: visible !important; }
+                    body.printing-solar #solar-energy-modal {
+                        position: fixed !important; inset: 0 !important; background: #ffffff !important;
+                        color: #0f172a !important; padding: 14px !important; overflow: visible !important; display: block !important;
+                    }
+                    body.printing-solar #solar-energy-card {
+                        background: #ffffff !important; color: #0f172a !important; border: none !important;
+                        box-shadow: none !important; max-width: 100% !important; max-height: none !important;
+                    }
+                }
+            `;
+            document.head.appendChild(solarPrintStyle);
+
+            // 1. Header "Solar & Bills" Button (right beside Selections button)
+            const openSelBtn = document.getElementById('open-selections-btn');
+            const openSolarBtn = document.createElement('button');
+            openSolarBtn.id = 'open-solar-energy-btn';
+            openSolarBtn.className = 'glass-panel px-3 py-2 rounded-xl text-xs font-semibold text-yellow-300 hover:text-white hover:bg-yellow-500/25 border border-yellow-400/35 transition flex items-center gap-1.5';
+            openSolarBtn.title = 'Open Solar PV, Battery & Essential Energy / Amber Bills Dashboard';
+            openSolarBtn.innerHTML = `<span>Solar & Bills</span><span id="solar-hdr-badge" class="px-1.5 py-0.5 rounded-md bg-yellow-400 text-slate-950 text-[10px] font-bold">13.2kW</span>`;
+            if (openSelBtn && openSelBtn.parentElement) {
+                openSelBtn.parentElement.insertBefore(openSolarBtn, openSelBtn.nextSibling);
+            }
+
+            // 2. Live Instantaneous Telemetry Pill (injected into bottom footer bar)
+            const footerEl = document.querySelector('.flex.flex-wrap.justify-between.items-center.gap-2.pointer-events-auto');
+            const liveTelemetryPill = document.createElement('div');
+            liveTelemetryPill.id = 'solar-live-telemetry-pill';
+            liveTelemetryPill.className = 'glass-panel px-3 py-1.5 rounded-xl text-[10px] font-mono text-slate-200 flex flex-wrap items-center gap-2.5 cursor-pointer hover:border-yellow-400/40 transition';
+            liveTelemetryPill.title = 'Live hourly power flow at current 3D Sun time (click to open Solar & Bills)';
+            liveTelemetryPill.innerHTML = `
+                <span class="text-yellow-300 font-bold">PV <span id="live-pv-kw">--</span></span>
+                <span class="text-sky-300">Load <span id="live-load-kw">--</span></span>
+                <span class="text-emerald-300">Batt <span id="live-batt-soc">--</span></span>
+                <span id="live-grid-wrap" class="text-slate-300">Grid <span id="live-grid-kw">--</span></span>
+            `;
+            if (footerEl) {
+                footerEl.insertBefore(liveTelemetryPill, footerEl.lastElementChild);
+            }
+
+            // 3. Floating Banner for 3D Roof Panel Click-to-Toggle Edit Mode
+            const editBanner = document.createElement('div');
+            editBanner.id = 'solar-panel-edit-banner';
+            editBanner.className = 'hidden fixed top-16 left-1/2 -translate-x-1/2 z-40 glass-panel px-4 py-2 rounded-2xl border border-yellow-400/50 flex flex-wrap items-center gap-3 text-xs';
+            editBanner.innerHTML = `
+                <span class="text-yellow-300 font-bold">3D Panel Placement Mode</span>
+                <span class="text-slate-300 text-[11px]">Click any panel or ghost slot on the roof to toggle it on/off</span>
+                <span id="edit-panel-count" class="font-mono text-sky-300 font-semibold">30 panels (13.2 kW)</span>
+                <button id="edit-reset-panels-btn" class="bg-white/10 hover:bg-white/20 text-slate-200 px-2.5 py-1 rounded-lg text-[11px] transition">Reset All</button>
+                <button id="edit-done-panels-btn" class="bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold px-3 py-1 rounded-lg text-[11px] transition">Done & Open Graphs</button>
+            `;
+            document.body.appendChild(editBanner);
+
+            // 4. Full Solar PV, Battery & Energy Bills Modal
+            const modalEl = document.createElement('div');
+            modalEl.id = 'solar-energy-modal';
+            modalEl.className = 'hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2 sm:p-5';
+            modalEl.innerHTML = `
+                <div id="solar-energy-card" class="glass-panel w-full max-w-6xl max-h-[92vh] rounded-2xl flex flex-col overflow-hidden border border-white/15">
+                    <!-- Modal Header -->
+                    <div class="px-4 sm:px-5 py-3 border-b border-white/10 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <h2 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                                <span>Solar PV, Battery & Energy Bills Simulator</span>
+                                <span id="solar-modal-rev-pill" class="px-2 py-0.5 rounded-md bg-sky-500/20 text-sky-300 border border-sky-400/30 text-[10px] font-mono">REV 1</span>
+                            </h2>
+                            <p id="solar-modal-sub" class="text-[11px] text-slate-400">328 George Bass Drive, Lilli Pilli NSW • Essential Energy (3-Phase) & Amber Electric FY2026–27</p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1.5 no-print">
+                            <button id="solar-edit-3d-btn" class="bg-yellow-400/20 hover:bg-yellow-400/35 text-yellow-300 border border-yellow-400/35 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition">Click Panels on 3D Roof</button>
+                            <button id="solar-compare-revs-btn" class="bg-cyan-500/20 hover:bg-cyan-500/35 text-cyan-300 border border-cyan-400/30 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition">Compare Skillion vs Hip</button>
+                            <button id="solar-copy-tsv-btn" class="bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 border border-sky-400/30 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition">Copy TSV</button>
+                            <button id="solar-print-btn" class="bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border border-amber-400/30 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition">Print</button>
+                            <button id="solar-close-btn" class="bg-rose-500/20 hover:bg-rose-500/35 text-rose-200 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition">Close</button>
+                        </div>
+                    </div>
+
+                    <!-- KPI Strip -->
+                    <div class="px-4 sm:px-5 py-2.5 bg-black/30 border-b border-white/10 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+                        <div class="bg-white/5 rounded-xl px-2.5 py-1.5">
+                            <div class="text-[10px] text-slate-400 uppercase">Installed Array</div>
+                            <div id="kpi-array" class="font-mono font-bold text-yellow-300 text-sm">13.2 kW</div>
+                            <div id="kpi-yield" class="text-[10px] text-slate-400 font-mono">19,200 kWh/yr</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl px-2.5 py-1.5">
+                            <div class="text-[10px] text-slate-400 uppercase">Self-Sufficiency</div>
+                            <div id="kpi-selfsuff" class="font-mono font-bold text-emerald-300 text-sm">--%</div>
+                            <div id="kpi-demand" class="text-[10px] text-slate-400 font-mono">Demand -- kWh</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl px-2.5 py-1.5">
+                            <div class="text-[10px] text-slate-400 uppercase">No-Solar Bill</div>
+                            <div id="kpi-basebill" class="font-mono font-bold text-rose-300 text-sm">$--/yr</div>
+                            <div class="text-[10px] text-slate-400">Same load & tariff</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl px-2.5 py-1.5">
+                            <div class="text-[10px] text-slate-400 uppercase">Solar+Batt Bill</div>
+                            <div id="kpi-netbill" class="font-mono font-bold text-sky-300 text-sm">$--/yr</div>
+                            <div id="kpi-curt" class="text-[10px] text-slate-400 font-mono">Curt: 0 kWh</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl px-2.5 py-1.5">
+                            <div class="text-[10px] text-slate-400 uppercase">Annual Savings</div>
+                            <div id="kpi-savings" class="font-mono font-bold text-emerald-400 text-sm">$--/yr</div>
+                            <div id="kpi-monthly-avg" class="text-[10px] text-slate-400 font-mono">Avg $--/mo</div>
+                        </div>
+                        <div class="bg-white/5 rounded-xl px-2.5 py-1.5">
+                            <div class="text-[10px] text-slate-400 uppercase">Simple Payback</div>
+                            <div id="kpi-payback" class="font-mono font-bold text-amber-300 text-sm">-- yrs</div>
+                            <div id="kpi-syscost" class="text-[10px] text-slate-400 font-mono">Capex $26,300</div>
+                        </div>
+                    </div>
+
+                    <!-- Optional Roof Revision Yield Comparison Banner -->
+                    <div id="solar-rev-compare-banner" class="hidden px-4 sm:px-5 py-2 bg-cyan-950/50 border-b border-cyan-400/25 text-[11px] flex flex-wrap items-center justify-between gap-2"></div>
+
+                    <!-- Body: Left Controls + Right Graphs -->
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 p-4 overflow-y-auto custom-scroll flex-1 text-xs">
+                        <!-- LEFT: CONFIGURATION CONTROLS (4 cols) -->
+                        <div class="lg:col-span-4 flex flex-col gap-2.5">
+                            <!-- 1. System Hardware & Roof Planes -->
+                            <div class="section-card space-y-2">
+                                <div class="text-[11px] font-bold text-yellow-300 uppercase tracking-wide">1. Solar Array & Battery Size</div>
+                                <div>
+                                    <div class="flex justify-between text-[10px] text-slate-300 mb-1">
+                                        <span>Target Solar Size (440W Panels)</span>
+                                        <span id="sol-actual-kw-lbl" class="font-mono text-yellow-300">13.2 kW (30)</span>
+                                    </div>
+                                    <div class="grid grid-cols-6 gap-0.5 bg-black/40 p-0.5 rounded-lg" id="sol-kw-btns">
+                                        <button class="sol-kw-btn seg-btn" data-kw="0">0</button>
+                                        <button class="sol-kw-btn seg-btn" data-kw="6.6">6.6</button>
+                                        <button class="sol-kw-btn seg-btn" data-kw="10.1">10.1</button>
+                                        <button class="sol-kw-btn seg-btn active-upg" data-kw="13.2">13.2</button>
+                                        <button class="sol-kw-btn seg-btn" data-kw="16.3">16.3</button>
+                                        <button class="sol-kw-btn seg-btn" data-kw="19.8">19.8</button>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div class="flex justify-between text-[10px] text-slate-300 mb-1">
+                                        <span>Battery Storage (Wall-Mounted)</span>
+                                        <span id="sol-batt-lbl" class="font-mono text-emerald-300">13.5 kWh</span>
+                                    </div>
+                                    <div class="grid grid-cols-6 gap-0.5 bg-black/40 p-0.5 rounded-lg" id="sol-batt-btns">
+                                        <button class="sol-batt-btn seg-btn" data-kwh="0">0</button>
+                                        <button class="sol-batt-btn seg-btn" data-kwh="10">10</button>
+                                        <button class="sol-batt-btn seg-btn active-std" data-kwh="13.5">13.5</button>
+                                        <button class="sol-batt-btn seg-btn" data-kwh="20">20</button>
+                                        <button class="sol-batt-btn seg-btn" data-kwh="27">27</button>
+                                        <button class="sol-batt-btn seg-btn" data-kwh="40">40</button>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-1.5">
+                                    <div>
+                                        <div class="text-[10px] text-slate-400 mb-0.5">Export Limit</div>
+                                        <div class="grid grid-cols-2 gap-0.5 bg-black/40 p-0.5 rounded-lg">
+                                            <button class="sol-exp-btn seg-btn active-sky" data-exp="15">15kW 3-Ph</button>
+                                            <button class="sol-exp-btn seg-btn" data-exp="5">5kW 1-Ph</button>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div class="text-[10px] text-slate-400 mb-0.5">3D Shade Raycast</div>
+                                        <label class="flex items-center justify-between bg-black/35 px-2 py-1 rounded-lg cursor-pointer text-[10px] text-slate-200">
+                                            <span>Neighbours/Trees</span>
+                                            <input id="sol-real-shade-chk" type="checkbox" checked class="accent-yellow-400 rounded">
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div class="text-[10px] text-slate-400 mb-1">Active Roof Planes</div>
+                                    <div class="grid grid-cols-4 gap-1 text-[10px]">
+                                        <label class="flex items-center gap-1 bg-black/30 px-1.5 py-1 rounded cursor-pointer"><input type="checkbox" class="sol-plane-chk accent-yellow-400" data-plane="nw" checked><span>NW</span></label>
+                                        <label class="flex items-center gap-1 bg-black/30 px-1.5 py-1 rounded cursor-pointer"><input type="checkbox" class="sol-plane-chk accent-yellow-400" data-plane="se" checked><span>SE</span></label>
+                                        <label class="flex items-center gap-1 bg-black/30 px-1.5 py-1 rounded cursor-pointer"><input type="checkbox" class="sol-plane-chk accent-yellow-400" data-plane="ne" checked><span>NE Hip</span></label>
+                                        <label class="flex items-center gap-1 bg-black/30 px-1.5 py-1 rounded cursor-pointer"><input type="checkbox" class="sol-plane-chk accent-yellow-400" data-plane="sw"><span>SW Hip</span></label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 2. Usage Profile: Regular, Airbnb & EV Charging -->
+                            <div class="section-card space-y-2">
+                                <div class="text-[11px] font-bold text-sky-300 uppercase tracking-wide">2. Consumption & EV Charging</div>
+                                <div class="grid grid-cols-3 gap-0.5 bg-black/40 p-0.5 rounded-lg">
+                                    <button class="sol-mode-btn seg-btn" data-mode="regular">Regular</button>
+                                    <button class="sol-mode-btn seg-btn active-sky" data-mode="airbnb">Airbnb</button>
+                                    <button class="sol-mode-btn seg-btn" data-mode="hybrid">Hybrid 50/50</button>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-1.5 text-[10px]">
+                                    <label class="flex flex-col gap-0.5 text-slate-300">
+                                        <span>Regular kWh/day</span>
+                                        <input id="sol-reg-kwh" type="number" min="5" max="80" step="1" value="22" class="bg-slate-900/90 border border-white/15 rounded-lg px-2 py-1 font-mono text-white">
+                                    </label>
+                                    <label class="flex flex-col gap-0.5 text-slate-300">
+                                        <span>Airbnb Occ kWh/day</span>
+                                        <input id="sol-air-occ-kwh" type="number" min="8" max="90" step="1" value="29" class="bg-slate-900/90 border border-white/15 rounded-lg px-2 py-1 font-mono text-white">
+                                    </label>
+                                </div>
+
+                                <div>
+                                    <div class="flex justify-between text-[10px] text-slate-300 mb-0.5">
+                                        <span>Airbnb Seasonal Occupancy Scale</span>
+                                        <span id="sol-occ-lbl" class="font-mono text-sky-300">100% (~62% yr avg)</span>
+                                    </div>
+                                    <input id="sol-occ-slider" type="range" min="0.4" max="1.35" step="0.05" value="1.0" class="w-full accent-sky-400 h-1.5 bg-slate-700 rounded-lg cursor-pointer">
+                                </div>
+
+                                <div class="pt-1.5 border-t border-white/10 space-y-1.5">
+                                    <div class="flex items-center justify-between">
+                                        <label class="flex items-center gap-1.5 cursor-pointer text-[11px] font-semibold text-purple-300">
+                                            <input id="sol-ev-chk" type="checkbox" checked class="accent-purple-400 rounded">
+                                            <span>EV Charging (Model Y / Guests)</span>
+                                        </label>
+                                        <span id="sol-ev-wk-lbl" class="font-mono text-[10px] text-purple-300">70 kWh/wk</span>
+                                    </div>
+                                    <input id="sol-ev-slider" type="range" min="0" max="210" step="10" value="70" class="w-full accent-purple-400 h-1.5 bg-slate-700 rounded-lg cursor-pointer">
+                                    <div class="grid grid-cols-3 gap-0.5 bg-black/40 p-0.5 rounded-lg">
+                                        <button class="sol-evstrat-btn seg-btn active-std" data-strat="solar_soak">Solar Soak</button>
+                                        <button class="sol-evstrat-btn seg-btn" data-strat="offpeak">Off-Peak</button>
+                                        <button class="sol-evstrat-btn seg-btn" data-strat="evening">6pm Peak</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 3. Essential Energy / Amber Tariffs & Hardware Quotes -->
+                            <div class="section-card space-y-2">
+                                <div class="text-[11px] font-bold text-emerald-300 uppercase tracking-wide">3. Essential Energy & Amber Tariffs</div>
+                                <select id="sol-tariff-select" class="w-full bg-slate-900/90 border border-white/15 rounded-xl px-2.5 py-1.5 text-[11px] text-slate-100 focus:outline-none focus:border-emerald-400">
+                                    <option value="ee_sunsoaker">Essential Energy — Sun Soaker TOU (BLNRSS2)</option>
+                                    <option value="amber">Amber Electric — Wholesale + SmartShift (BLNREX2)</option>
+                                    <option value="ee_sharer">Essential Energy — Solar Sharer (Free 11am–2pm)</option>
+                                    <option value="ee_flat">Essential Energy — Flat Rate Plan</option>
+                                </select>
+
+                                <div class="grid grid-cols-3 gap-1.5 text-[10px]">
+                                    <label class="flex flex-col gap-0.5 text-slate-400"><span>Supply $/day</span><input id="rate-supply" type="number" step="0.05" class="rate-inp bg-slate-900/90 border border-white/15 rounded px-1.5 py-0.5 font-mono text-white"></label>
+                                    <label class="flex flex-col gap-0.5 text-slate-400"><span>Sub $/month</span><input id="rate-sub" type="number" step="1" class="rate-inp bg-slate-900/90 border border-white/15 rounded px-1.5 py-0.5 font-mono text-white"></label>
+                                    <label class="flex flex-col gap-0.5 text-slate-400"><span>Peak Imp $</span><input id="rate-peak-imp" type="number" step="0.01" class="rate-inp bg-slate-900/90 border border-white/15 rounded px-1.5 py-0.5 font-mono text-white"></label>
+                                    <label class="flex flex-col gap-0.5 text-slate-400"><span>Off-Peak $</span><input id="rate-off-imp" type="number" step="0.01" class="rate-inp bg-slate-900/90 border border-white/15 rounded px-1.5 py-0.5 font-mono text-white"></label>
+                                    <label class="flex flex-col gap-0.5 text-slate-400"><span>Flat FiT $</span><input id="rate-flat-fit" type="number" step="0.01" class="rate-inp bg-slate-900/90 border border-white/15 rounded px-1.5 py-0.5 font-mono text-emerald-300"></label>
+                                    <label class="flex flex-col gap-0.5 text-slate-400"><span>5–8pm FiT $</span><input id="rate-peak-fit" type="number" step="0.01" class="rate-inp bg-slate-900/90 border border-white/15 rounded px-1.5 py-0.5 font-mono text-emerald-300"></label>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-1.5 pt-1.5 border-t border-white/10 text-[10px]">
+                                    <label class="flex flex-col gap-0.5 text-slate-300">
+                                        <span>Solar Quote (AUD)</span>
+                                        <input id="sol-quote-pv" type="number" step="500" value="14500" class="bg-slate-900/90 border border-white/15 rounded-lg px-2 py-1 font-mono text-amber-300">
+                                    </label>
+                                    <label class="flex flex-col gap-0.5 text-slate-300">
+                                        <span>Battery Quote (AUD)</span>
+                                        <input id="sol-quote-batt" type="number" step="500" value="11800" class="bg-slate-900/90 border border-white/15 rounded-lg px-2 py-1 font-mono text-amber-300">
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- RIGHT: 3 INTERACTIVE GRAPHS (8 cols) -->
+                        <div class="lg:col-span-8 flex flex-col gap-3">
+                            <!-- GRAPH 1: 24-Hour Power Flow -->
+                            <div class="section-card flex flex-col gap-1.5">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-bold text-white text-[11px] uppercase tracking-wide">24-Hour Power Flow (kW & Battery SoC %)</span>
+                                        <select id="sol-month-select" class="bg-slate-900/90 border border-white/15 rounded-lg px-2 py-0.5 text-[10px] text-amber-300 font-semibold"></select>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-2.5 text-[10px] text-slate-300">
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-yellow-400/80"></span>Solar PV</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-sky-400"></span>House</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-purple-400"></span>+EV</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-0.5 bg-emerald-400"></span>Batt SoC %</span>
+                                    </div>
+                                </div>
+                                <div class="w-full h-44 relative">
+                                    <canvas id="solar-chart-day" class="w-full h-full block"></canvas>
+                                </div>
+                            </div>
+
+                            <!-- GRAPH 2: 12-Month Energy Breakdown -->
+                            <div class="section-card flex flex-col gap-1.5">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <span class="font-bold text-white text-[11px] uppercase tracking-wide">12-Month Energy Generated vs Consumption & Grid (kWh/Month)</span>
+                                    <div class="flex flex-wrap items-center gap-2.5 text-[10px] text-slate-300">
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-yellow-400"></span>Solar Gen</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-sky-400"></span>House</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-purple-400"></span>EV</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-rose-400"></span>Import</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-0.5 bg-emerald-400"></span>Export</span>
+                                    </div>
+                                </div>
+                                <div class="w-full h-44 relative">
+                                    <canvas id="solar-chart-months" class="w-full h-full block"></canvas>
+                                </div>
+                            </div>
+
+                            <!-- GRAPH 3: 12-Month Bills & Credits -->
+                            <div class="section-card flex flex-col gap-1.5">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <span class="font-bold text-white text-[11px] uppercase tracking-wide">Monthly Electricity Bills — No Solar vs Solar + Battery ($ AUD)</span>
+                                    <div class="flex flex-wrap items-center gap-2.5 text-[10px] text-slate-300">
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-slate-500/70"></span>No-Solar Bill</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-amber-400"></span>Net Payable ($)</span>
+                                        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-400"></span>Net Credit (-$)</span>
+                                    </div>
+                                </div>
+                                <div class="w-full h-44 relative">
+                                    <canvas id="solar-chart-bills" class="w-full h-full block"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modalEl);
+
+            // Populate Month selector
+            const monthSel = document.getElementById('sol-month-select');
+            MONTH_NAMES.forEach((mn, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                opt.textContent = `${mn} (Typical Day)`;
+                monthSel.appendChild(opt);
+            });
+            monthSel.value = SolarState.selectedMonth;
+
+            // =========================================================================
+            // 26D. NATIVE HTML5 CANVAS CHART RENDERERS (ZERO EXTERNAL LIBRARIES)
+            // =========================================================================
+            function prepCanvas(canvasId) {
+                const canvas = document.getElementById(canvasId);
+                if (!canvas) return null;
+                const rect = canvas.getBoundingClientRect();
+                const w = Math.max(300, Math.floor(rect.width));
+                const h = Math.max(150, Math.floor(rect.height));
+                const dpr = Math.min(window.devicePixelRatio || 1, 2);
+                canvas.width = w * dpr;
+                canvas.height = h * dpr;
+                const ctx = canvas.getContext('2d');
+                ctx.scale(dpr, dpr);
+                ctx.clearRect(0, 0, w, h);
+                return { ctx, w, h };
+            }
+
+            function draw24HourChart(sim) {
+                const c = prepCanvas('solar-chart-day');
+                if (!c || !sim) return;
+                const { ctx, w, h } = c;
+                const mData = sim.monthly[SolarState.selectedMonth];
+                const hrs = mData.dayProfile.hours;
+
+                const pad = { l: 38, r: 34, t: 12, b: 22 };
+                const pw = w - pad.l - pad.r;
+                const ph = h - pad.t - pad.b;
+
+                const maxKw = Math.max(4, ...hrs.map(x => Math.max(x.pv, x.totalLoad))) * 1.15;
+                const xFor = (hr) => pad.l + (hr / 23) * pw;
+                const yKw = (kw) => pad.t + ph - (kw / maxKw) * ph;
+                const ySoc = (pct) => pad.t + ph - (pct / 100) * ph;
+
+                // Gridlines
+                ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '10px Inter, sans-serif';
+                ctx.textAlign = 'right';
+                for (let i = 0; i <= 4; i++) {
+                    const v = (maxKw * i) / 4;
+                    const y = yKw(v);
+                    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+                    ctx.fillText(v.toFixed(1), pad.l - 5, y + 3);
+                }
+                // Right axis labels (Battery SoC %)
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#34d399';
+                [0, 50, 100].forEach(p => ctx.fillText(`${p}%`, w - pad.r + 4, ySoc(p) + 3));
+
+                // X-axis hour ticks
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#94a3b8';
+                [0, 4, 8, 12, 16, 20, 23].forEach(hr => {
+                    ctx.fillText(`${hr}:00`, xFor(hr), h - 5);
+                });
+
+                // 1. Solar PV Filled Area (Amber/Yellow)
+                ctx.beginPath();
+                ctx.moveTo(xFor(0), yKw(0));
+                hrs.forEach((d, i) => ctx.lineTo(xFor(i), yKw(d.pv)));
+                ctx.lineTo(xFor(23), yKw(0));
+                ctx.closePath();
+                const pvGrad = ctx.createLinearGradient(0, pad.t, 0, pad.t + ph);
+                pvGrad.addColorStop(0, 'rgba(250, 204, 21, 0.45)');
+                pvGrad.addColorStop(1, 'rgba(250, 204, 21, 0.04)');
+                ctx.fillStyle = pvGrad;
+                ctx.fill();
+                ctx.strokeStyle = '#facc15';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                hrs.forEach((d, i) => i === 0 ? ctx.moveTo(xFor(i), yKw(d.pv)) : ctx.lineTo(xFor(i), yKw(d.pv)));
+                ctx.stroke();
+
+                // 2. Total Load (House + EV) Purple Band & House Base Sky Line
+                ctx.beginPath();
+                hrs.forEach((d, i) => i === 0 ? ctx.moveTo(xFor(i), yKw(d.totalLoad)) : ctx.lineTo(xFor(i), yKw(d.totalLoad)));
+                for (let i = 23; i >= 0; i--) ctx.lineTo(xFor(i), yKw(hrs[i].houseLoad));
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(192, 132, 252, 0.35)';
+                ctx.fill();
+
+                ctx.strokeStyle = '#c084fc';
+                ctx.lineWidth = 1.6;
+                ctx.beginPath();
+                hrs.forEach((d, i) => i === 0 ? ctx.moveTo(xFor(i), yKw(d.totalLoad)) : ctx.lineTo(xFor(i), yKw(d.totalLoad)));
+                ctx.stroke();
+
+                ctx.strokeStyle = '#38bdf8';
+                ctx.lineWidth = 1.8;
+                ctx.beginPath();
+                hrs.forEach((d, i) => i === 0 ? ctx.moveTo(xFor(i), yKw(d.houseLoad)) : ctx.lineTo(xFor(i), yKw(d.houseLoad)));
+                ctx.stroke();
+
+                // 3. Battery SoC % Curve (Emerald Dashed)
+                if (SolarState.batteryKwh > 0) {
+                    ctx.save();
+                    ctx.setLineDash([4, 3]);
+                    ctx.strokeStyle = '#34d399';
+                    ctx.lineWidth = 1.8;
+                    ctx.beginPath();
+                    hrs.forEach((d, i) => i === 0 ? ctx.moveTo(xFor(i), ySoc(d.socPct)) : ctx.lineTo(xFor(i), ySoc(d.socPct)));
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                // 4. Current 3D Sun Time Scrubber Line
+                const curHr = THREE.MathUtils.clamp(parseFloat(timeSlider.value) || 10.5, 0, 23);
+                const sx = xFor(curHr);
+                ctx.save();
+                ctx.setLineDash([3, 3]);
+                ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath(); ctx.moveTo(sx, pad.t); ctx.lineTo(sx, pad.t + ph); ctx.stroke();
+                ctx.restore();
+            }
+
+            function drawMonthlyEnergyChart(sim) {
+                const c = prepCanvas('solar-chart-months');
+                if (!c || !sim) return;
+                const { ctx, w, h } = c;
+                const months = sim.monthly;
+
+                const pad = { l: 42, r: 12, t: 12, b: 22 };
+                const pw = w - pad.l - pad.r;
+                const ph = h - pad.t - pad.b;
+
+                const maxVal = Math.max(400, ...months.map(m => Math.max(m.solarKwh, m.houseKwh + m.evKwh, m.importKwh))) * 1.12;
+                const yVal = (v) => pad.t + ph - (v / maxVal) * ph;
+
+                ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '10px Inter, sans-serif';
+                ctx.textAlign = 'right';
+                for (let i = 0; i <= 4; i++) {
+                    const v = Math.round((maxVal * i) / 4);
+                    const y = yVal(v);
+                    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+                    ctx.fillText(v, pad.l - 5, y + 3);
+                }
+
+                const slotW = pw / 12;
+                const barW = Math.max(4, Math.min(12, slotW * 0.24));
+
+                months.forEach((m, idx) => {
+                    const cx = pad.l + slotW * (idx + 0.5);
+                    // Highlight selected month subtly
+                    if (idx === SolarState.selectedMonth) {
+                        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+                        ctx.fillRect(pad.l + slotW * idx + 2, pad.t, slotW - 4, ph);
+                    }
+
+                    // Bar 1: Solar Generated (Yellow)
+                    const hSol = (m.solarKwh / maxVal) * ph;
+                    ctx.fillStyle = '#facc15';
+                    ctx.fillRect(cx - barW * 1.55, pad.t + ph - hSol, barW, hSol);
+
+                    // Bar 2: Stacked Consumption (House Sky + EV Purple)
+                    const hHouse = (m.houseKwh / maxVal) * ph;
+                    const hEv = (m.evKwh / maxVal) * ph;
+                    ctx.fillStyle = '#38bdf8';
+                    ctx.fillRect(cx - barW * 0.45, pad.t + ph - hHouse, barW, hHouse);
+                    ctx.fillStyle = '#c084fc';
+                    ctx.fillRect(cx - barW * 0.45, pad.t + ph - hHouse - hEv, barW, hEv);
+
+                    // Bar 3: Grid Import (Rose)
+                    const hImp = (m.importKwh / maxVal) * ph;
+                    ctx.fillStyle = '#fb7185';
+                    ctx.fillRect(cx + barW * 0.65, pad.t + ph - hImp, barW, hImp);
+
+                    // Month label
+                    ctx.fillStyle = idx === SolarState.selectedMonth ? '#fcd34d' : '#94a3b8';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(m.month, cx, h - 5);
+                });
+
+                // Exported Energy Line (Emerald)
+                ctx.strokeStyle = '#34d399';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                months.forEach((m, idx) => {
+                    const cx = pad.l + slotW * (idx + 0.5);
+                    const y = yVal(m.exportKwh);
+                    if (idx === 0) ctx.moveTo(cx, y); else ctx.lineTo(cx, y);
+                });
+                ctx.stroke();
+                ctx.fillStyle = '#34d399';
+                months.forEach((m, idx) => {
+                    const cx = pad.l + slotW * (idx + 0.5);
+                    ctx.beginPath(); ctx.arc(cx, yVal(m.exportKwh), 2.5, 0, Math.PI * 2); ctx.fill();
+                });
+            }
+
+            function drawMonthlyBillsChart(sim) {
+                const c = prepCanvas('solar-chart-bills');
+                if (!c || !sim) return;
+                const { ctx, w, h } = c;
+                const months = sim.monthly;
+
+                const pad = { l: 46, r: 12, t: 14, b: 22 };
+                const pw = w - pad.l - pad.r;
+                const ph = h - pad.t - pad.b;
+
+                const maxPos = Math.max(100, ...months.map(m => Math.max(m.baseBill, m.netBill, 0))) * 1.15;
+                const minNeg = Math.min(0, ...months.map(m => m.netBill)) * 1.18;
+                const range = Math.max(1, maxPos - minNeg);
+                const yDollar = (v) => pad.t + ((maxPos - v) / range) * ph;
+                const yZero = yDollar(0);
+
+                // Gridlines
+                ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '10px Inter, sans-serif';
+                ctx.textAlign = 'right';
+                [maxPos, maxPos * 0.5, 0, ...(minNeg < -10 ? [minNeg] : [])].forEach(v => {
+                    const y = yDollar(v);
+                    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+                    const lbl = v < 0 ? `-$${Math.round(Math.abs(v))}` : `$${Math.round(v)}`;
+                    ctx.fillText(lbl, pad.l - 5, y + 3);
+                });
+
+                // Stronger Zero Baseline
+                ctx.strokeStyle = 'rgba(255,255,255,0.32)';
+                ctx.beginPath(); ctx.moveTo(pad.l, yZero); ctx.lineTo(w - pad.r, yZero); ctx.stroke();
+
+                const slotW = pw / 12;
+                const barW = Math.max(6, Math.min(16, slotW * 0.34));
+
+                months.forEach((m, idx) => {
+                    const cx = pad.l + slotW * (idx + 0.5);
+
+                    // Left Bar: No-Solar Baseline Bill
+                    const yBase = yDollar(m.baseBill);
+                    ctx.fillStyle = 'rgba(148, 163, 184, 0.45)';
+                    ctx.fillRect(cx - barW - 1, yBase, barW, yZero - yBase);
+
+                    // Right Bar: Net Bill (Amber if payable, Emerald if credit below zero)
+                    const yNet = yDollar(m.netBill);
+                    ctx.fillStyle = m.netBill <= 0 ? '#34d399' : '#fbbf24';
+                    if (m.netBill >= 0) {
+                        ctx.fillRect(cx + 1, yNet, barW, yZero - yNet);
+                    } else {
+                        ctx.fillRect(cx + 1, yZero, barW, yNet - yZero);
+                    }
+
+                    ctx.fillStyle = idx === SolarState.selectedMonth ? '#fcd34d' : '#94a3b8';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(m.month, cx, h - 5);
+                });
+            }
+
+            // =========================================================================
+            // 26E. LIVE TELEMETRY & FULL DASHBOARD SYNC
+            // =========================================================================
+            function updateLiveTelemetryFromSun() {
+                if (!lastSimResult) return;
+                const doy = parseFloat(daySlider.value) || 172;
+                // Map day-of-year to 0..11 month index
+                let mIdx = 0;
+                for (let i = 0; i < 12; i++) {
+                    if (doy >= MONTH_DOYS[i] - 15) mIdx = i;
+                }
+                const hr = Math.min(23, Math.max(0, Math.floor(parseFloat(timeSlider.value) || 10)));
+                const d = lastSimResult.monthly[mIdx].dayProfile.hours[hr];
+                if (!d) return;
+
+                document.getElementById('live-pv-kw').textContent = `${d.pv.toFixed(1)}kW`;
+                document.getElementById('live-load-kw').textContent = `${d.totalLoad.toFixed(1)}kW`;
+                document.getElementById('live-batt-soc').textContent = SolarState.batteryKwh > 0 ? `${d.socPct}%` : 'N/A';
+
+                const gridEl = document.getElementById('live-grid-kw');
+                const gridWrap = document.getElementById('live-grid-wrap');
+                if (d.gridExp > 0.05) {
+                    gridEl.textContent = `+${d.gridExp.toFixed(1)}kW Exp`;
+                    gridWrap.className = 'text-emerald-300 font-semibold';
+                } else if (d.gridImp > 0.05) {
+                    gridEl.textContent = `-${d.gridImp.toFixed(1)}kW Imp`;
+                    gridWrap.className = 'text-rose-300 font-semibold';
+                } else {
+                    gridEl.textContent = '0.0kW';
+                    gridWrap.className = 'text-slate-300';
+                }
+
+                // Update 3D garage battery LED status colour
+                if (d.battDelta > 0.1) {
+                    solarMats.battLed.color.setHex(0x34d399);
+                    solarMats.battLed.emissive.setHex(0x10b981); // Charging green
+                } else if (d.battDelta < -0.1) {
+                    solarMats.battLed.color.setHex(0xfbbf24);
+                    solarMats.battLed.emissive.setHex(0xf59e0b); // Discharging amber
+                } else {
+                    solarMats.battLed.color.setHex(0x38bdf8);
+                    solarMats.battLed.emissive.setHex(0x0ea5e9); // Standby/Full sky
+                }
+
+                // Redraw 24h scrubber if modal is open
+                if (!modalEl.classList.contains('hidden')) {
+                    draw24HourChart(lastSimResult);
+                }
+            }
+
+            function syncSolarQuoteToSelections() {
+                SelectionsState.upgradeQuotes.solarPv = SolarState.solarQuoteCost;
+                SelectionsState.upgradeQuotes.solarBattery = SolarState.batteryQuoteCost;
+                updateBudgetTelemetry();
+            }
+
+            function refreshSolarSimulationAndUI() {
+                lastSimResult = runFullYearSimulation();
+                const a = lastSimResult.annual;
+
+                // Header & Edit Banner badges
+                document.getElementById('solar-hdr-badge').textContent = `${lastSimResult.installedKw}kW`;
+                document.getElementById('sol-actual-kw-lbl').textContent = `${lastSimResult.installedKw} kW (${lastSimResult.panelCount} panels)`;
+                document.getElementById('edit-panel-count').textContent = `${lastSimResult.panelCount} panels (${lastSimResult.installedKw} kW)`;
+                document.getElementById('solar-modal-rev-pill').textContent = `REV ${currentRevision}`;
+                document.getElementById('sol-batt-lbl').textContent = `${SolarState.batteryKwh} kWh`;
+
+                // KPIs
+                document.getElementById('kpi-array').textContent = `${lastSimResult.installedKw} kW`;
+                document.getElementById('kpi-yield').textContent = `${Math.round(a.solarKwh).toLocaleString()} kWh/yr`;
+                document.getElementById('kpi-selfsuff').textContent = `${Math.round(a.selfSufficiency)}%`;
+                document.getElementById('kpi-demand').textContent = `Load ${Math.round(a.houseKwh + a.evKwh).toLocaleString()} kWh`;
+                document.getElementById('kpi-basebill').textContent = `${formatAUD(a.baseBill)}/yr`;
+                document.getElementById('kpi-netbill').textContent = a.netBill < 0
+                    ? `-${formatAUD(Math.abs(a.netBill))}/yr`
+                    : `${formatAUD(a.netBill)}/yr`;
+                document.getElementById('kpi-netbill').className = a.netBill <= 0
+                    ? 'font-mono font-bold text-emerald-400 text-sm'
+                    : 'font-mono font-bold text-sky-300 text-sm';
+                document.getElementById('kpi-curt').textContent = `Curt: ${Math.round(a.curtailedKwh)} kWh`;
+                document.getElementById('kpi-savings').textContent = `${formatAUD(a.savings)}/yr`;
+                document.getElementById('kpi-monthly-avg').textContent = `Avg ${formatAUD(a.savings / 12)}/mo`;
+                document.getElementById('kpi-payback').textContent = Number.isFinite(a.paybackYrs) ? `${a.paybackYrs.toFixed(1)} yrs` : '—';
+                document.getElementById('kpi-syscost').textContent = `Capex ${formatAUD(a.systemCost)}`;
+
+                // Sync rate inputs
+                document.getElementById('rate-supply').value = SolarState.rates.supplyDay.toFixed(2);
+                document.getElementById('rate-sub').value = SolarState.rates.monthlySub.toFixed(0);
+                document.getElementById('rate-peak-imp').value = SolarState.rates.peakImport.toFixed(3);
+                document.getElementById('rate-off-imp').value = SolarState.rates.offpeakImport.toFixed(3);
+                document.getElementById('rate-flat-fit').value = SolarState.rates.flatFit.toFixed(3);
+                document.getElementById('rate-peak-fit').value = SolarState.rates.peakFit.toFixed(3);
+                document.getElementById('sol-quote-pv').value = SolarState.solarQuoteCost;
+                document.getElementById('sol-quote-batt').value = SolarState.batteryQuoteCost;
+
+                updateLiveTelemetryFromSun();
+                if (!modalEl.classList.contains('hidden')) {
+                    requestAnimationFrame(() => {
+                        draw24HourChart(lastSimResult);
+                        drawMonthlyEnergyChart(lastSimResult);
+                        drawMonthlyBillsChart(lastSimResult);
+                    });
+                }
+            }
+
+            function syncSolarControlButtons() {
+                document.querySelectorAll('.sol-kw-btn').forEach(b => {
+                    b.className = 'sol-kw-btn seg-btn' + (Math.abs(parseFloat(b.dataset.kw) - SolarState.targetKw) < 0.2 ? ' active-upg' : '');
+                });
+                document.querySelectorAll('.sol-batt-btn').forEach(b => {
+                    b.className = 'sol-batt-btn seg-btn' + (Math.abs(parseFloat(b.dataset.kwh) - SolarState.batteryKwh) < 0.2 ? ' active-std' : '');
+                });
+                document.querySelectorAll('.sol-exp-btn').forEach(b => {
+                    b.className = 'sol-exp-btn seg-btn' + (parseFloat(b.dataset.exp) === SolarState.exportLimitKw ? ' active-sky' : '');
+                });
+                document.querySelectorAll('.sol-mode-btn').forEach(b => {
+                    b.className = 'sol-mode-btn seg-btn' + (b.dataset.mode === SolarState.usageMode ? ' active-sky' : '');
+                });
+                document.querySelectorAll('.sol-evstrat-btn').forEach(b => {
+                    b.className = 'sol-evstrat-btn seg-btn' + (b.dataset.strat === SolarState.evStrategy ? ' active-std' : '');
+                });
+                document.querySelectorAll('.sol-plane-chk').forEach(chk => {
+                    chk.checked = Boolean(SolarState.activePlanes[chk.dataset.plane]);
+                });
+                document.getElementById('sol-real-shade-chk').checked = SolarState.useRealShading;
+                document.getElementById('sol-reg-kwh').value = SolarState.regularDailyKwh;
+                document.getElementById('sol-air-occ-kwh').value = SolarState.airbnbOccKwh;
+                document.getElementById('sol-occ-slider').value = SolarState.airbnbOccScale;
+                const avgOcc = Math.round(DEFAULT_AIRBNB_OCC.reduce((a, b) => a + Math.min(100, b * SolarState.airbnbOccScale), 0) / 12);
+                document.getElementById('sol-occ-lbl').textContent = `${Math.round(SolarState.airbnbOccScale * 100)}% (~${avgOcc}% yr avg)`;
+                document.getElementById('sol-ev-chk').checked = SolarState.evEnabled;
+                document.getElementById('sol-ev-slider').value = SolarState.evWeeklyKwh;
+                document.getElementById('sol-ev-wk-lbl').textContent = `${SolarState.evWeeklyKwh} kWh/wk`;
+                document.getElementById('sol-tariff-select').value = SolarState.tariffKey;
+            }
+
+            // =========================================================================
+            // 26F. UI EVENTS, 3D CLICK-TO-TOGGLE PANELS & REVISION COMPARATOR
+            // =========================================================================
+            function openSolarModal() {
+                SolarState.panelEditMode = false;
+                editBanner.classList.add('hidden');
+                rebuildSolarPanels3D();
+                modalEl.classList.remove('hidden');
+                syncSolarControlButtons();
+                refreshSolarSimulationAndUI();
+            }
+
+            openSolarBtn.addEventListener('click', openSolarModal);
+            liveTelemetryPill.addEventListener('click', openSolarModal);
+            document.getElementById('solar-close-btn').addEventListener('click', () => modalEl.classList.add('hidden'));
+            modalEl.addEventListener('click', (e) => { if (e.target === modalEl) modalEl.classList.add('hidden'); });
+
+            // 3D Roof Panel Click-to-Toggle Mode
+            document.getElementById('solar-edit-3d-btn').addEventListener('click', () => {
+                modalEl.classList.add('hidden');
+                SolarState.panelEditMode = true;
+                roofGroup.visible = true;
+                editBanner.classList.remove('hidden');
+                rebuildSolarPanels3D();
+                refreshSolarSimulationAndUI();
+                flyTo(new THREE.Vector3(14, 24, -14), new THREE.Vector3(15, 6.2, 0));
+            });
+
+            document.getElementById('edit-done-panels-btn').addEventListener('click', openSolarModal);
+            document.getElementById('edit-reset-panels-btn').addEventListener('click', () => {
+                SolarState.disabledPanelIds.clear();
+                rebuildSolarPanels3D();
+                refreshSolarSimulationAndUI();
+            });
+
+            // Raycast individual solar panels on the 3D roof when Panel Edit Mode is active
+            const panelRay = new THREE.Raycaster();
+            const panelPtr = new THREE.Vector2();
+            renderer.domElement.addEventListener('pointerdown', (e) => {
+                if (!SolarState.panelEditMode || fpsActive || treeMode) return;
+                panelPtr.x = (e.clientX / window.innerWidth) * 2 - 1;
+                panelPtr.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                panelRay.setFromCamera(panelPtr, camera);
+                const hits = panelRay.intersectObjects(solarPanelsGroup.children, true);
+                if (hits.length > 0 && hits[0].object.userData.solarPanelId) {
+                    const pid = hits[0].object.userData.solarPanelId;
+                    if (SolarState.disabledPanelIds.has(pid)) SolarState.disabledPanelIds.delete(pid);
+                    else SolarState.disabledPanelIds.add(pid);
+                    rebuildSolarPanels3D();
+                    refreshSolarSimulationAndUI();
+                }
+            });
+
+            // Roof Revision Yield Comparison (Rev 1/2 Skillion vs Rev 3/4 Hip)
+            document.getElementById('solar-compare-revs-btn').addEventListener('click', () => {
+                const banner = document.getElementById('solar-rev-compare-banner');
+                const buildListForRev = (rev) => {
+                    const slots = computePlaneSlotsForRevision(rev);
+                    const targetCount = Math.round(SolarState.targetKw / PANEL_W);
+                    // Fair comparison: use NW+SE on Skillion, NW+NE+SE on Hip
+                    const filtered = slots.filter(s => rev <= 2 ? (s.plane === 'nw' || s.plane === 'se') : (s.plane === 'nw' || s.plane === 'ne' || s.plane === 'se'));
+                    return filtered.slice(0, targetCount).map(s => ({
+                        id: s.id, plane: s.plane, pos: new THREE.Vector3(s.x, s.y + 0.08, s.z), normal: s.normal
+                    }));
+                };
+                const simSk = runFullYearSimulation(buildListForRev(2));
+                const simHp = runFullYearSimulation(buildListForRev(4));
+                const diffKwh = Math.round(simSk.annual.solarKwh - simHp.annual.solarKwh);
+                const diffAud = Math.round(simSk.annual.savings - simHp.annual.savings);
+                const winner = diffKwh >= 0 ? 'Skillion (Rev 1/2)' : '22.5° Hip (Rev 3/4)';
+
+                banner.innerHTML = `
+                    <div class="flex flex-wrap items-center gap-3">
+                        <span class="font-bold text-cyan-300">Roof Yield Compare:</span>
+                        <span><strong>Rev 1/2 Skillion:</strong> ${simSk.installedKw}kW → <span class="text-yellow-300 font-mono">${Math.round(simSk.annual.solarKwh).toLocaleString()} kWh/yr</span> (Net ${formatAUD(simSk.annual.netBill)}/yr)</span>
+                        <span><strong>Rev 3/4 Hip:</strong> ${simHp.installedKw}kW → <span class="text-yellow-300 font-mono">${Math.round(simHp.annual.solarKwh).toLocaleString()} kWh/yr</span> (Net ${formatAUD(simHp.annual.netBill)}/yr)</span>
+                        <span class="text-emerald-300 font-semibold">${winner} ahead by ${Math.abs(diffKwh).toLocaleString()} kWh/yr (${formatAUD(Math.abs(diffAud))}/yr)</span>
+                    </div>
+                    <button id="close-rev-compare-btn" class="text-slate-400 hover:text-white text-[10px] px-1.5">✕</button>
+                `;
+                banner.classList.remove('hidden');
+                document.getElementById('close-rev-compare-btn').addEventListener('click', () => banner.classList.add('hidden'));
+            });
+
+            // System Size, Battery, Export, Planes, Usage, EV & Tariff listeners
+            document.querySelectorAll('.sol-kw-btn').forEach(b => b.addEventListener('click', () => {
+                SolarState.targetKw = parseFloat(b.dataset.kw);
+                SolarState.inverterKw = SolarState.targetKw <= 6.6 ? 5.0 : (SolarState.targetKw <= 13.5 ? 10.0 : 15.0);
+                SolarState.solarQuoteCost = SolarState.targetKw === 0 ? 0 : Math.round(SolarState.targetKw * 1100 / 100) * 100;
+                SolarState.disabledPanelIds.clear();
+                rebuildSolarPanels3D(); rebuildBatteryHardware3D();
+                syncSolarControlButtons(); syncSolarQuoteToSelections(); refreshSolarSimulationAndUI();
+            }));
+
+            document.querySelectorAll('.sol-batt-btn').forEach(b => b.addEventListener('click', () => {
+                SolarState.batteryKwh = parseFloat(b.dataset.kwh);
+                SolarState.batteryQuoteCost = SolarState.batteryKwh === 0 ? 0 : Math.round(SolarState.batteryKwh * 875 / 100) * 100;
+                rebuildBatteryHardware3D();
+                syncSolarControlButtons(); syncSolarQuoteToSelections(); refreshSolarSimulationAndUI();
+            }));
+
+            document.querySelectorAll('.sol-exp-btn').forEach(b => b.addEventListener('click', () => {
+                SolarState.exportLimitKw = parseFloat(b.dataset.exp);
+                syncSolarControlButtons(); refreshSolarSimulationAndUI();
+            }));
+
+            document.querySelectorAll('.sol-plane-chk').forEach(chk => chk.addEventListener('change', () => {
+                SolarState.activePlanes[chk.dataset.plane] = chk.checked;
+                rebuildSolarPanels3D(); refreshSolarSimulationAndUI();
+            }));
+
+            document.getElementById('sol-real-shade-chk').addEventListener('change', (e) => {
+                SolarState.useRealShading = e.target.checked;
+                refreshSolarSimulationAndUI();
+            });
+
+            document.querySelectorAll('.sol-mode-btn').forEach(b => b.addEventListener('click', () => {
+                SolarState.usageMode = b.dataset.mode;
+                syncSolarControlButtons(); refreshSolarSimulationAndUI();
+            }));
+
+            document.getElementById('sol-reg-kwh').addEventListener('input', (e) => {
+                SolarState.regularDailyKwh = Math.max(2, parseFloat(e.target.value) || 22);
+                refreshSolarSimulationAndUI();
+            });
+            document.getElementById('sol-air-occ-kwh').addEventListener('input', (e) => {
+                SolarState.airbnbOccKwh = Math.max(4, parseFloat(e.target.value) || 29);
+                refreshSolarSimulationAndUI();
+            });
+            document.getElementById('sol-occ-slider').addEventListener('input', (e) => {
+                SolarState.airbnbOccScale = parseFloat(e.target.value);
+                syncSolarControlButtons(); refreshSolarSimulationAndUI();
+            });
+            document.getElementById('sol-ev-chk').addEventListener('change', (e) => {
+                SolarState.evEnabled = e.target.checked;
+                refreshSolarSimulationAndUI();
+            });
+            document.getElementById('sol-ev-slider').addEventListener('input', (e) => {
+                SolarState.evWeeklyKwh = parseFloat(e.target.value);
+                syncSolarControlButtons(); refreshSolarSimulationAndUI();
+            });
+            document.querySelectorAll('.sol-evstrat-btn').forEach(b => b.addEventListener('click', () => {
+                SolarState.evStrategy = b.dataset.strat;
+                syncSolarControlButtons(); refreshSolarSimulationAndUI();
+            }));
+
+            document.getElementById('sol-tariff-select').addEventListener('change', (e) => {
+                SolarState.tariffKey = e.target.value;
+                SolarState.rates = { ...TARIFF_PRESETS[SolarState.tariffKey] };
+                refreshSolarSimulationAndUI();
+            });
+
+            const bindRate = (id, key) => {
+                document.getElementById(id).addEventListener('input', (e) => {
+                    SolarState.rates[key] = Math.max(0, parseFloat(e.target.value) || 0);
+                    if (key === 'offpeakImport' && SolarState.tariffKey === 'ee_sunsoaker') SolarState.rates.middayImport = SolarState.rates[key];
+                    refreshSolarSimulationAndUI();
+                });
+            };
+            bindRate('rate-supply', 'supplyDay');
+            bindRate('rate-sub', 'monthlySub');
+            bindRate('rate-peak-imp', 'peakImport');
+            bindRate('rate-off-imp', 'offpeakImport');
+            bindRate('rate-flat-fit', 'flatFit');
+            bindRate('rate-peak-fit', 'peakFit');
+
+            document.getElementById('sol-quote-pv').addEventListener('input', (e) => {
+                SolarState.solarQuoteCost = Math.max(0, Number(e.target.value) || 0);
+                syncSolarQuoteToSelections(); refreshSolarSimulationAndUI();
+            });
+            document.getElementById('sol-quote-batt').addEventListener('input', (e) => {
+                SolarState.batteryQuoteCost = Math.max(0, Number(e.target.value) || 0);
+                syncSolarQuoteToSelections(); refreshSolarSimulationAndUI();
+            });
+
+            monthSel.addEventListener('change', (e) => {
+                SolarState.selectedMonth = parseInt(e.target.value, 10);
+                if (lastSimResult) {
+                    draw24HourChart(lastSimResult);
+                    drawMonthlyEnergyChart(lastSimResult);
+                    drawMonthlyBillsChart(lastSimResult);
+                }
+            });
+
+            // Print & Copy TSV Export
+            document.getElementById('solar-print-btn').addEventListener('click', () => {
+                document.body.classList.remove('printing-windows', 'printing-selections');
+                document.body.classList.add('printing-solar');
+                window.print();
+                document.body.classList.remove('printing-solar');
+            });
+
+            document.getElementById('solar-copy-tsv-btn').addEventListener('click', async () => {
+                if (!lastSimResult) return;
+                const header = ['Month', 'Solar Gen (kWh)', 'House (kWh)', 'EV (kWh)', 'Import (kWh)', 'Export (kWh)', 'No-Solar Bill ($)', 'Net Bill ($)'].join('\t');
+                const lines = lastSimResult.monthly.map(m => [
+                    m.month, Math.round(m.solarKwh), Math.round(m.houseKwh), Math.round(m.evKwh),
+                    Math.round(m.importKwh), Math.round(m.exportKwh), m.baseBill.toFixed(0), m.netBill.toFixed(0)
+                ].join('\t'));
+                try {
+                    await navigator.clipboard.writeText([header, ...lines].join('\n'));
+                    const btn = document.getElementById('solar-copy-tsv-btn');
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => { btn.textContent = 'Copy TSV'; }, 1500);
+                } catch {
+                    alert('Copy failed — use Print instead.');
+                }
+            });
+
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Escape') {
+                    if (!modalEl.classList.contains('hidden')) modalEl.classList.add('hidden');
+                    else if (SolarState.panelEditMode) openSolarModal();
+                }
+            });
+            window.addEventListener('resize', () => {
+                if (!modalEl.classList.contains('hidden') && lastSimResult) {
+                    draw24HourChart(lastSimResult);
+                    drawMonthlyEnergyChart(lastSimResult);
+                    drawMonthlyBillsChart(lastSimResult);
+                }
+            });
+
+            // =========================================================================
+            // 26G. NON-DESTRUCTIVE WRAPPERS (HOUSE, SOLAR, SELECTIONS BUDGET & JSON)
+            // =========================================================================
+            const _prevBuildHouseSolar = buildHouse;
+            const _prevUpdateSolar = updateSolar;
+            const _prevGetCatalogSolar = getSelectionsCatalog;
+            const _prevCaptureSnap = captureSpecSnapshot;
+            const _prevApplySnap = applySpecSnapshot;
+            const _prevInit = init;
+
+            buildHouse = function() {
+                _prevBuildHouseSolar();
+                rebuildSolarPanels3D();
+                rebuildBatteryHardware3D();
+                refreshSolarSimulationAndUI();
+            };
+
+            updateSolar = function(dayOfYear, timeHours) {
+                _prevUpdateSolar(dayOfYear, timeHours);
+                updateLiveTelemetryFromSun();
+            };
+
+            getSelectionsCatalog = function() {
+                const list = _prevGetCatalogSolar();
+                // Keep Selections Budget inputs synced with SolarState quotes
+                if (SelectionsState.upgradeQuotes.solarPv === undefined) SelectionsState.upgradeQuotes.solarPv = SolarState.solarQuoteCost;
+                else SolarState.solarQuoteCost = Number(SelectionsState.upgradeQuotes.solarPv) || 0;
+                if (SelectionsState.upgradeQuotes.solarBattery === undefined) SelectionsState.upgradeQuotes.solarBattery = SolarState.batteryQuoteCost;
+                else SolarState.batteryQuoteCost = Number(SelectionsState.upgradeQuotes.solarBattery) || 0;
+
+                const kw = lastSimResult ? lastSimResult.installedKw : SolarState.targetKw;
+                const count = lastSimResult ? lastSimResult.panelCount : Math.round(SolarState.targetKw / PANEL_W);
+                const annualSav = lastSimResult ? formatAUD(lastSimResult.annual.savings) : '$0';
+
+                list.push(
+                    {
+                        trade: '8. Solar PV & Battery',
+                        item: 'Rooftop Solar Array & 3-Ph Inverter',
+                        selection: kw > 0 ? `${kw} kW (${count}× 440W N-Type) + ${SolarState.inverterKw} kW 3-Phase Hybrid Inverter` : 'No Solar PV Installed',
+                        status: kw > 0 ? 'UPGRADE' : 'STD',
+                        costKey: kw > 0 ? 'solarPv' : null,
+                        notes: `Essential Energy ${SolarState.exportLimitKw} kW export cap • Est. savings ${annualSav}/yr on ${SolarState.rates.short}.`
+                    },
+                    {
+                        trade: '8. Solar PV & Battery',
+                        item: 'Home Battery Storage System',
+                        selection: SolarState.batteryKwh > 0 ? `${SolarState.batteryKwh} kWh Wall-Mounted Battery (Garage SE Wall)` : 'Solar Only (No Battery)',
+                        status: SolarState.batteryKwh > 0 ? 'UPGRADE' : 'STD',
+                        costKey: SolarState.batteryKwh > 0 ? 'solarBattery' : null,
+                        notes: SolarState.rates.smartShift ? 'Amber SmartShift 5pm–8pm BLNREX2 peak export & midday curtailment enabled.' : `Tariff: ${SolarState.rates.name}.`
+                    }
+                );
+                return list;
+            };
+
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureSnap();
+                snap.solarEnergy = {
+                    ...SolarState,
+                    rates: { ...SolarState.rates },
+                    activePlanes: { ...SolarState.activePlanes },
+                    disabledPanelIds: Array.from(SolarState.disabledPanelIds)
+                };
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                if (snap && snap.solarEnergy) {
+                    const se = snap.solarEnergy;
+                    const oldPvQ = SolarState.solarQuoteCost;
+                    const oldBatQ = SolarState.batteryQuoteCost;
+                    Object.assign(SolarState, se);
+                    if (se.rates) SolarState.rates = { ...se.rates };
+                    if (se.activePlanes) SolarState.activePlanes = { ...se.activePlanes };
+                    SolarState.disabledPanelIds = new Set(se.disabledPanelIds || []);
+                    if (preserveQuotes) {
+                        SolarState.solarQuoteCost = oldPvQ;
+                        SolarState.batteryQuoteCost = oldBatQ;
+                    }
+                    syncSolarQuoteToSelections();
+                }
+                _prevApplySnap(snap, preserveQuotes);
+                rebuildSolarPanels3D();
+                rebuildBatteryHardware3D();
+                syncSolarControlButtons();
+                refreshSolarSimulationAndUI();
+            };
+
+            init = function() {
+                SelectionsState.upgradeQuotes.solarPv = SolarState.solarQuoteCost;
+                SelectionsState.upgradeQuotes.solarBattery = SolarState.batteryQuoteCost;
+                _prevInit();
+                rebuildSolarPanels3D();
+                rebuildBatteryHardware3D();
+                syncSolarControlButtons();
+                refreshSolarSimulationAndUI();
+                updateBudgetTelemetry();
+            };
+        })();
+        
+// =========================================================================
+        // 27. DROP-IN MODULE: DESIGNER WINDOW MODS (1.A/1.B/1.C, W02, CORNER BOOTH
+        //     W04/W05, STAIRWELL W09 & MASTER BED LAYOUT)
+        // Paste Section 1 + Section 2 immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initDesignerWindowsPlugin() {
+            const DesignerWinState = {
+                tripleFrontW01: false,      // false = single W01, true = 1.A, 1.B, 1.C triple portrait windows
+                syncW01Triple: true,        // keeps 1.A, 1.B, 1.C width/sill/head/type/cover synced when editing
+                stairWindowPreset: 'none',  // 'none' | 'slit' | 'tall-slit' | 'long-slit' | 'picture'
+                stairWindowObscure: false,  // privacy obscure glass option facing Lot 5
+                masterBedLayout: 'partition'// 'partition' (default) | 'underW02' (headboard under NW W02)
+            };
+
+            // Stairwell Window (W09) Presets — centered in stairwell void (X = 16.035m, SE Wall Z = 4.58m)
+            // Note: Mid-landing sits at Y = 1.730m (-1.405m below GF FFL); all heads align to 2150mm GF head.
+            const STAIR_WINDOW_PRESETS = {
+                none: {
+                    label: 'None (Solid SE Wall)',
+                    width: 0.61, sill: 0.35, head: 2.15, type: 'fixed',
+                    note: 'No stairwell window.'
+                },
+                slit: {
+                    label: 'Slit (610w × 1800h)',
+                    width: 0.61, sill: 0.35, head: 2.15, type: 'fixed',
+                    note: 'Upper stairwell vertical slit (610W × 1800H, 350–2150mm above GF FFL).'
+                },
+                'tall-slit': {
+                    label: 'Tall Slit (610w × 2800h)',
+                    width: 0.61, sill: -0.65, head: 2.15, type: 'fixed',
+                    note: 'Two-storey vertical stairwell slit (610W × 2800H, 755mm above mid-landing to 2150mm GF head).'
+                },
+                'long-slit': {
+                    label: 'Long Slit (1810w × 600h)',
+                    width: 1.81, sill: 1.55, head: 2.15, type: 'awning-flank',
+                    note: 'Horizontal high stairwell slot (1810W × 600H, 1550–2150mm above GF FFL, AFA).'
+                },
+                picture: {
+                    label: 'Picture (1600w × 2400h)',
+                    width: 1.60, sill: -0.25, head: 2.15, type: 'fixed',
+                    note: 'Large stairwell feature picture window (1600W × 2400H, 1155mm above mid-landing to 2150mm GF head).'
+                }
+            };
+
+            // Helper factory for the 3 front portrait windows (1.A, 1.B, 1.C) & stairwell W09
+            // Bed 1 front span: Z_NW (-4.88) to Z_BED1_SE (-0.84) = 4.04m -> 745 | 610 | 360 | 610 | 360 | 610 | 745mm
+            function createExtraOpenings() {
+                return {
+                    W01A: {
+                        id: 'W01A', label: '1.A — Bed 1 Front Left (SW)', room: 'Bed 1 • Front SW (Left)',
+                        category: 'window', wall: 'gf-front-bed1', axis: 'Z', pos: X_FRONT_BED1, outwardSign: -1,
+                        baseY: () => Y_GF_FFL, center: -3.83, width: 0.61, minW: 0.45, maxW: 0.85,
+                        sill: 0.35, minSill: 0.15, head: 2.15, maxHead: 2.40,
+                        type: 'awning-stacked', defaultPanels: 1, openPct: 0, covering: 'venetian', coverDrop: 75,
+                        obscure: false, builderNote: 'Front triple window 1.A (610W × 1800H, 360mm brick pier to 1.B).',
+                        cam: { p: [2.2, 5.1, -3.4], t: [8.0, 4.3, -2.86] }
+                    },
+                    W01B: {
+                        id: 'W01B', label: '1.B — Bed 1 Front Center (SW)', room: 'Bed 1 • Front SW (Center)',
+                        category: 'window', wall: 'gf-front-bed1', axis: 'Z', pos: X_FRONT_BED1, outwardSign: -1,
+                        baseY: () => Y_GF_FFL, center: -2.86, width: 0.61, minW: 0.45, maxW: 0.85,
+                        sill: 0.35, minSill: 0.15, head: 2.15, maxHead: 2.40,
+                        type: 'awning-stacked', defaultPanels: 1, openPct: 0, covering: 'venetian', coverDrop: 75,
+                        obscure: false, builderNote: 'Front triple window 1.B (610W × 1800H, centered in Bed 1).',
+                        cam: { p: [2.2, 5.1, -2.8], t: [8.0, 4.3, -2.86] }
+                    },
+                    W01C: {
+                        id: 'W01C', label: '1.C — Bed 1 Front Right (SW)', room: 'Bed 1 • Front SW (Right)',
+                        category: 'window', wall: 'gf-front-bed1', axis: 'Z', pos: X_FRONT_BED1, outwardSign: -1,
+                        baseY: () => Y_GF_FFL, center: -1.89, width: 0.61, minW: 0.45, maxW: 0.85,
+                        sill: 0.35, minSill: 0.15, head: 2.15, maxHead: 2.40,
+                        type: 'awning-stacked', defaultPanels: 1, openPct: 0, covering: 'venetian', coverDrop: 75,
+                        obscure: false, builderNote: 'Front triple window 1.C (610W × 1800H, 360mm brick pier to 1.B).',
+                        cam: { p: [2.2, 5.1, -2.0], t: [8.0, 4.3, -2.86] }
+                    },
+                    W09: {
+                        id: 'W09', label: 'W09 — Stairwell Feature (SE)', room: 'Stairwell • SE Wall',
+                        category: 'window', wall: 'se-stairwell', axis: 'X', pos: Z_SE, outwardSign: 1,
+                        baseY: () => Y_GF_FFL, center: 16.035, width: 0.61, minW: 0.45, maxW: 1.85,
+                        sill: -0.65, minSill: -1.10, head: 2.15, maxHead: 2.40,
+                        type: 'fixed', defaultPanels: 1, openPct: 0, covering: 'none', coverDrop: 60,
+                        obscure: false, builderNote: 'Two-storey stairwell feature window on SE wall.',
+                        cam: { p: [16.0, 5.2, 12.2], t: [16.035, 3.8, 4.58] }
+                    }
+                };
+            }
+
+            // Build the Designer Mod Schedule Preset (builds on Updated Awning Schedule)
+            function createDesignerSchedule() {
+                const s = JSON.parse(JSON.stringify(SCHEDULE_PRESETS.updated));
+                // Restore baseY functions stripped by JSON clone
+                Object.keys(s).forEach(id => { s[id].baseY = SCHEDULE_PRESETS.updated[id].baseY; });
+
+                // Add 1.A, 1.B, 1.C & W09
+                Object.assign(s, createExtraOpenings());
+
+                // W02: Master Bed Highlight Window above Bedhead (1800W × 600H, Sill 1550, Head 2150, AFA)
+                s.W02.room = 'Bed 1 • NW Highlight (Above Bed)';
+                s.W02.center = 9.855;   // Dead center in Bed 1 (X: 8.14..11.57)
+                s.W02.width = 1.80;     // 1800 mm W
+                s.W02.maxW = 2.40;
+                s.W02.sill = 1.55;      // 1550 mm sill -> clears 1150mm bedhead & lamps
+                s.W02.head = 2.15;      // 2150 mm head -> 600 mm H
+                s.W02.type = 'awning-flank'; // 3-bay AFA (flanking awnings + fixed center)
+                s.W02.openPct = 35;
+                s.W02.builderNote = '1800W × 600H highlight window above Bed 1 bedhead (Sill 1550, Head 2150, AFA).';
+                s.W02.cam = { p: [9.85, 5.3, -11.2], t: [9.855, 4.9, -4.88] };
+
+                // W04: Bench Dining NW — stretched closer to northern corner (2710W × 1200H, 575mm corner pier clear of downpipe)
+                s.W04.room = 'Bench Dining • NW Corner';
+                s.W04.center = 19.48;   // Spans 18.125..20.835 -> 575mm masonry corner pier before X_REAR_WALL (21.41)
+                s.W04.width = 2.71;
+                s.W04.sill = 0.86;
+                s.W04.head = 2.06;
+                s.W04.type = 'awning-ffa';
+                s.W04.builderNote = 'Stretched toward northern corner (2710W × 1200H, 860mm booth sill, 575mm corner return clear of downpipe).';
+
+                // W05: Bench Dining Rear NE — stretched closer to northern corner (1810W × 1200H, 525mm corner pier clear of downpipe)
+                s.W05.room = 'Bench Dining • Rear NE Corner';
+                s.W05.center = -3.45;   // Spans -4.355..-2.545 -> 525mm masonry corner pier before Z_NW (-4.88)
+                s.W05.width = 1.81;
+                s.W05.sill = 0.86;
+                s.W05.head = 2.06;
+                s.W05.type = 'awning-ffa';
+                s.W05.builderNote = 'Stretched toward northern corner (1810W × 1200H, 860mm booth sill, 525mm corner return clear of downpipe).';
+
+                return s;
+            }
+
+            // Register extra openings on Rev 1, Updated & new Designer presets
+            const extrasInit = createExtraOpenings();
+            Object.assign(SCHEDULE_PRESETS.rev1, createExtraOpenings());
+            Object.assign(SCHEDULE_PRESETS.updated, createExtraOpenings());
+            SCHEDULE_PRESETS.designer = createDesignerSchedule();
+            Object.assign(OPENING_STATE, extrasInit);
+
+            // Ensure existing W02 maxW allows 1800-2400mm even before switching presets
+            OPENING_STATE.W02.maxW = 2.40;
+            SCHEDULE_PRESETS.rev1.W02.maxW = 2.40;
+            SCHEDULE_PRESETS.updated.W02.maxW = 2.40;
+
+            // =========================================================================
+            // 27A. SURGICAL FRONT BED 1 TRIPLE WINDOW BUILDER (REV 1, 2, 3 & 4 SAFE)
+            // =========================================================================
+            function applyFrontBed1TripleSurgery() {
+                if (!DesignerWinState.tripleFrontW01) return;
+
+                const toRemove = [];
+                const box = new THREE.Box3();
+                const size = new THREE.Vector3();
+
+                dynamicGFWallsGroup.children.forEach(child => {
+                    // 1. Identify single W01 opening group at X = X_FRONT_BED1
+                    if (child.isGroup && Math.abs(child.position.x - X_FRONT_BED1) < 0.06 &&
+                        child.position.z > Z_NW && child.position.z < Z_BED1_SE) {
+                        toRemove.push(child);
+                        return;
+                    }
+                    // 2. Identify Bed 1 front wall slab mesh (thin along X at X = 8.00, spanning Z_NW..Z_BED1_SE)
+                    if (child.isMesh) {
+                        box.setFromObject(child);
+                        box.getSize(size);
+                        if (size.x < 0.35 && size.z > 3.5 &&
+                            box.min.x > X_FRONT_BED1 - 0.20 && box.max.x < X_FRONT_BED1 + 0.25 &&
+                            box.min.y < Y_GF_FFL + 0.50 && box.max.z < Z_BED1_SE + 0.15) {
+                            toRemove.push(child);
+                        }
+                    }
+                });
+
+                toRemove.forEach(obj => {
+                    obj.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+                    dynamicGFWallsGroup.remove(obj);
+                });
+
+                const S = OPENING_STATE;
+                const spanZ = (o) => ({
+                    z0: o.center - o.width / 2,
+                    z1: o.center + o.width / 2,
+                    y0: o.baseY() + o.sill,
+                    y1: o.baseY() + o.head
+                });
+                const tripleOpenings = [spanZ(S.W01A), spanZ(S.W01B), spanZ(S.W01C)];
+
+                // Rebuild Bed 1 front wall matching the active revision's exact top profile & material
+                if (currentRevision === 1) {
+                    makeWallZ(Z_NW, Z_BED1_SE, Y_GF_FFL, mainRoofBottomY(Z_NW), mainRoofBottomY(Z_BED1_SE), X_FRONT_BED1, 0.14, materials.cladding, tripleOpenings, dynamicGFWallsGroup);
+                } else if (currentRevision === 2) {
+                    const Y_FC_BAND = Y_GF_FFL + 2.22;
+                    makeWallZ(Z_NW, Z_BED1_SE, Y_GF_FFL, Y_FC_BAND, Y_FC_BAND, X_FRONT_BED1, 0.24, materials.brick, tripleOpenings, dynamicGFWallsGroup);
+                } else {
+                    // Rev 3 & Rev 4 (22.5° Hip Roofs — flat horizontal top plate)
+                    const wallTop = Y_GF_CEIL + 0.08;
+                    makeWallZ(Z_NW, Z_BED1_SE, Y_GF_FFL, wallTop, wallTop, X_FRONT_BED1, 0.24, materials.brick, tripleOpenings, dynamicGFWallsGroup);
+                }
+
+                // Add the 3 configurable portrait openings (1.A, 1.B, 1.C)
+                addConfigurableOpening(S.W01A, dynamicGFWallsGroup);
+                addConfigurableOpening(S.W01B, dynamicGFWallsGroup);
+                addConfigurableOpening(S.W01C, dynamicGFWallsGroup);
+
+                // Add matching NW Front Corner Wall Sconce on Rev 2 & Rev 4 (as in front render)
+                if (currentRevision === 2 || currentRevision === 4) {
+                    const sc = new THREE.Group();
+                    const body = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.24, 0.09), materials.rev2Post);
+                    const topGlow = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.07), materials.sconceGlow);
+                    topGlow.position.y = 0.125;
+                    const botGlow = topGlow.clone();
+                    botGlow.position.y = -0.125;
+                    sc.add(body, topGlow, botGlow);
+                    sc.position.set(X_FRONT_BED1 - 0.14, Y_GF_FFL + 1.58, Z_NW + 0.36);
+                    dynamicGFWallsGroup.add(sc);
+                }
+            }
+
+            // =========================================================================
+            // 27B. SURGICAL TWO-STOREY SE STAIRWELL WALL CUTOUT & W09 BUILDER
+            // =========================================================================
+            const stairWallOverlayGroup = new THREE.Group();
+            stairWallOverlayGroup.name = 'se-stairwell-wall-overlay';
+
+            function applyStairwellWindowSurgery() {
+                clearGroup(stairWallOverlayGroup);
+                if (stairWallOverlayGroup.parent !== dynamicGFWallsGroup) {
+                    dynamicGFWallsGroup.add(stairWallOverlayGroup);
+                }
+
+                // Always locate the base Upper GF SE wall & Lower LGF SE wall to toggle visibility cleanly
+                const isRev1 = (currentRevision === 1);
+                const findSEWall = (grp, xStart, yMidTarget) => {
+                    const box = new THREE.Box3();
+                    const size = new THREE.Vector3();
+                    for (let i = 0; i < grp.children.length; i++) {
+                        const c = grp.children[i];
+                        if (!c.isMesh) continue;
+                        box.setFromObject(c);
+                        box.getSize(size);
+                        if (size.z < 0.35 && size.x > 6.0 &&
+                            box.min.z > Z_SE - 0.25 && box.max.z < Z_SE + 0.30 &&
+                            Math.abs(box.min.x - xStart) < 0.30 &&
+                            box.min.y <= yMidTarget && box.max.y >= yMidTarget) {
+                            return c;
+                        }
+                    }
+                    return null;
+                };
+
+                const origUpperSE = findSEWall(staticGFGroup, X_FRONT_GARAGE, Y_GF_FFL + 1.2);
+                const origLowerSE = findSEWall(staticLGFGroup, X_LOWER_START, Y_LGF_SSL + 1.2);
+
+                // If Stairwell Window is set to None, restore original solid SE walls
+                if (DesignerWinState.stairWindowPreset === 'none') {
+                    if (origUpperSE) origUpperSE.visible = true;
+                    if (origLowerSE) origLowerSE.visible = true;
+                    return;
+                }
+
+                const w9 = OPENING_STATE.W09;
+                w9.obscure = DesignerWinState.stairWindowObscure;
+                const x0 = w9.center - w9.width / 2;
+                const x1 = w9.center + w9.width / 2;
+                const winY0 = w9.baseY() + w9.sill;
+                const winY1 = w9.baseY() + w9.head;
+                const crossesFloor = winY0 < Y_GF_FFL - 0.015;
+
+                // 1. Replace Upper GF SE Wall cleanly with cutout
+                const upperMat = isRev1 ? materials.vcladding : materials.brick;
+                const upperThick = isRev1 ? 0.14 : 0.24;
+                const upperTop = Y_GF_CEIL + 0.12;
+
+                if (origUpperSE) origUpperSE.visible = false;
+                if (!crossesFloor) {
+                    makeWallX(X_FRONT_GARAGE, X_REAR_WALL, Y_GF_FFL, upperTop, Z_SE, upperThick, upperMat, [
+                        { x0, x1, y0: winY0, y1: winY1 }
+                    ], stairWallOverlayGroup);
+                } else {
+                    // Clean 3-piece split so zero 10mm floor-line sliver crosses the two-storey glass
+                    makeWallX(X_FRONT_GARAGE, x0, Y_GF_FFL, upperTop, Z_SE, upperThick, upperMat, [], stairWallOverlayGroup);
+                    makeWallX(x1, X_REAR_WALL, Y_GF_FFL, upperTop, Z_SE, upperThick, upperMat, [], stairWallOverlayGroup);
+                    if (upperTop > winY1 + 0.02) {
+                        makeWallX(x0, x1, winY1, upperTop, Z_SE, upperThick, upperMat, [], stairWallOverlayGroup);
+                    }
+                }
+
+                // 2. Replace Lower LGF SE Wall cleanly ONLY if W09 drops below GF FFL (Tall Slit / Picture)
+                if (crossesFloor) {
+                    if (origLowerSE) origLowerSE.visible = false;
+                    const lowerZ = isRev1 ? (Z_SE + 0.06) : Z_SE;
+                    makeWallX(X_LOWER_START, x0, Y_PAD, Y_GF_FFL, lowerZ, 0.24, materials.brick, [], stairWallOverlayGroup);
+                    makeWallX(x1, X_REAR_WALL, Y_PAD, Y_GF_FFL, lowerZ, 0.24, materials.brick, [], stairWallOverlayGroup);
+                    if (winY0 > Y_PAD + 0.05) {
+                        makeWallX(x0, x1, Y_PAD, winY0, lowerZ, 0.24, materials.brick, [], stairWallOverlayGroup);
+                    }
+                } else {
+                    if (origLowerSE) origLowerSE.visible = true;
+                }
+
+                // 3. Insert configurable W09 opening (frame, glass, awnings, architrave & coverings)
+                w9.pos = Z_SE;
+                addConfigurableOpening(w9, stairWallOverlayGroup);
+            }
+
+            // =========================================================================
+            // 27C. NORTHERN CORNER DOWNPIPE SIGHTLINE TUCK & SE STAIR SKIRTING CLEANUP
+            // =========================================================================
+            function refineCornerDownpipeAndStairSkirting() {
+                // 1. Tuck the Northern Corner (X_REAR_WALL, Z_NW) downpipe right behind the solid corner masonry
+                //    so neither W04 nor W05 looks directly at a downpipe from the corner dining booth.
+                downpipesGroup.children.forEach(pipe => {
+                    if (pipe.isMesh && Math.abs(pipe.position.x - (X_REAR_WALL - 0.18)) < 0.25 &&
+                        Math.abs(pipe.position.z - (Z_NW - 0.18)) < 0.25) {
+                        pipe.position.x = X_REAR_WALL + 0.04;
+                        pipe.position.z = Z_NW - 0.14;
+                    }
+                });
+
+                // 2. Split the long SE Living wall skirting board so it stops cleanly either side of the stairwell void
+                const skirtH = SelectionsState.trimProfile === '90tall' ? 0.090 : 0.066;
+                const skirtT = 0.018;
+                const gfY = Y_GF_FFL + 0.002;
+                const toSplit = [];
+                trimsGroup.children.forEach(c => {
+                    if (c.isMesh && Math.abs(c.position.z - (Z_SE - 0.14)) < 0.05 &&
+                        Math.abs(c.position.x - 15.1) < 0.25 && c.position.y > Y_GF_FFL) {
+                        toSplit.push(c);
+                    }
+                });
+                toSplit.forEach(oldSkirt => {
+                    if (oldSkirt.geometry) oldSkirt.geometry.dispose();
+                    trimsGroup.remove(oldSkirt);
+
+                    // Left segment (Garage side: 9.0 -> 15.02) & Right segment (Living side: 17.04 -> 21.25)
+                    const s1 = new THREE.Mesh(new THREE.BoxGeometry(6.02, skirtH, skirtT), materials.interiorTrim);
+                    s1.position.set(12.01, gfY + skirtH / 2, Z_SE - 0.14);
+                    const s2 = new THREE.Mesh(new THREE.BoxGeometry(4.21, skirtH, skirtT), materials.interiorTrim);
+                    s2.position.set(19.145, gfY + skirtH / 2, Z_SE - 0.14);
+                    trimsGroup.add(s1, s2);
+                });
+            }
+
+            // =========================================================================
+            // 27D. SWITCHABLE MASTER BEDROOM LAYOUT (PARTITION WALL vs UNDER W02 NW)
+            // =========================================================================
+            InteriorRegistry.register('bed1', (g, { addBox, addCyl, levels, bounds }) => {
+                const y = levels.GF;
+                if (DesignerWinState.masterBedLayout === 'underW02') {
+                    // Bedhead centered directly under the 1800×600 W02 highlight window on the NW wall!
+                    const cx = 9.855;
+                    const innerNW = bounds.Z_NW + 0.14; // -4.74m
+                    // Woven Jute Rug
+                    addBox(g, 2.75, 0.014, 2.45, cx, y + 0.008, innerNW + 1.45, furnMats.rugJute, false);
+                    // King Bed (1.84m W along X × 2.04m L along Z, facing +Z into room)
+                    addBox(g, 1.84, 0.30, 2.04, cx, y + 0.005, innerNW + 1.12, furnMats.oak);
+                    addBox(g, 1.78, 0.22, 1.98, cx, y + 0.305, innerNW + 1.12, furnMats.linen);
+                    addBox(g, 1.82, 0.04, 1.38, cx, y + 0.515, innerNW + 1.44, furnMats.sageFabric);
+                    // Upholstered Bedhead (1.15m tall -> clears W02's 1.55m sill cleanly!) + Pillows
+                    addBox(g, 1.94, 1.15, 0.12, cx, y + 0.005, innerNW + 0.07, furnMats.sandFabric);
+                    addBox(g, 0.72, 0.15, 0.36, cx - 0.44, y + 0.525, innerNW + 0.34, furnMats.whitePaint);
+                    addBox(g, 0.72, 0.15, 0.36, cx + 0.44, y + 0.525, innerNW + 0.34, furnMats.whitePaint);
+                    // Flanking Oak Bedside Tables & Warm Table Lamps
+                    [cx - 1.24, cx + 1.24].forEach(bx => {
+                        addBox(g, 0.48, 0.48, 0.44, bx, y + 0.005, innerNW + 0.26, furnMats.oak);
+                        addTableLamp(g, addCyl, bx, y + 0.485, innerNW + 0.26);
+                    });
+                    // Coastal Artwork on right Partition Wall (X = 11.53) & Corner Plant near Entry
+                    addWallPainting(g, addBox, 'Z', 11.53, y + 1.55, -2.75, 1.15, 0.80, -1, 0);
+                    addIndoorPlant(g, addCyl, bounds.X_FRONT_BED1 + 0.52, y + 0.005, bounds.Z_BED1_SE - 0.46, 1.05);
+                } else {
+                    // Default Layout: King Bed against X = 11.52 partition wall facing front SW
+                    addBox(g, 2.55, 0.014, 2.75, 10.05, y + 0.008, -2.75, furnMats.rugJute, false);
+                    addBox(g, 2.04, 0.30, 1.84, 10.40, y + 0.005, -2.75, furnMats.oak);
+                    addBox(g, 1.98, 0.22, 1.78, 10.40, y + 0.305, -2.75, furnMats.linen);
+                    addBox(g, 1.38, 0.04, 1.82, 10.08, y + 0.515, -2.75, furnMats.coastalBlue);
+                    addBox(g, 0.12, 1.15, 1.94, 11.46, y + 0.005, -2.75, furnMats.sandFabric);
+                    addBox(g, 0.36, 0.15, 0.72, 11.16, y + 0.525, -2.30, furnMats.whitePaint);
+                    addBox(g, 0.36, 0.15, 0.72, 11.16, y + 0.525, -3.20, furnMats.whitePaint);
+                    [-1.50, -4.00].forEach(bz => {
+                        addBox(g, 0.44, 0.48, 0.48, 11.24, y + 0.005, bz, furnMats.oak);
+                        addTableLamp(g, addCyl, 11.24, y + 0.485, bz);
+                    });
+                    addWallPainting(g, addBox, 'Z', 11.53, y + 1.65, -2.75, 1.25, 0.75, -1, 0);
+                    addIndoorPlant(g, addCyl, bounds.X_FRONT_BED1 + 0.55, y + 0.005, bounds.Z_NW + 0.55, 1.15);
+                }
+            });
+
+    // =========================================================================
+            // 27E. INJECTED UI CONTROLS INSIDE THE "WINDOWS" TAB
+            // =========================================================================
+            // 1. Expand the Schedule Preset row to 3 buttons: Rev 1 | Updated | Designer Mod
+            const schedRev1Btn = document.getElementById('sched-rev1-btn');
+            const schedUpdBtn = document.getElementById('sched-updated-btn');
+            let schedDesignerBtn = document.getElementById('sched-designer-btn');
+            if (schedUpdBtn && schedUpdBtn.parentElement && !schedDesignerBtn) {
+                const bar = schedUpdBtn.parentElement;
+                bar.classList.remove('grid-cols-2');
+                bar.classList.add('grid-cols-3');
+                schedRev1Btn.textContent = 'Rev 1 Base';
+                schedUpdBtn.textContent = 'Updated';
+
+                schedDesignerBtn = document.createElement('button');
+                schedDesignerBtn.id = 'sched-designer-btn';
+                schedDesignerBtn.className = 'text-slate-300 hover:text-white py-1 rounded-lg font-medium transition';
+                schedDesignerBtn.title = 'Apply Designer Mod: 1.A/1.B/1.C Front Triple, W02 1800×600, Northern Corner W04/W05 & Stairwell Window';
+                schedDesignerBtn.textContent = 'Designer Mod';
+                bar.appendChild(schedDesignerBtn);
+            }
+
+            // 2. Inject Designer Window Controls Card (W01 Single/Triple, Stairwell W09, Master Bed Layout)
+            const tabWindows = document.getElementById('tab-windows');
+            const winSelectEl = document.getElementById('win-select');
+            const designerCard = document.createElement('div');
+            designerCard.id = 'designer-window-controls';
+            designerCard.className = 'section-card space-y-2 text-[10px]';
+            designerCard.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span class="font-bold text-cyan-300 uppercase tracking-wide">Designer Window Mods</span>
+                    <button id="des-focus-corner-btn" class="text-[9px] bg-white/10 hover:bg-sky-500/30 text-sky-200 px-1.5 py-0.5 rounded transition" title="Fly camera to Northern Dining Booth Corner (W04/W05)">View Corner</button>
+                </div>
+
+                <!-- Front Bed 1: Single W01 vs Triple 1.A / 1.B / 1.C -->
+                <div class="flex items-center justify-between gap-1.5">
+                    <span class="text-slate-300">Front W01</span>
+                    <div class="flex items-center gap-1.5">
+                        <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                            <button id="des-w01-single-btn" class="seg-btn active-std">Single W01</button>
+                            <button id="des-w01-triple-btn" class="seg-btn">1.A / 1.B / 1.C ↑</button>
+                        </div>
+                        <label class="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" title="Keep 1.A, 1.B & 1.C sliders synced">
+                            <input id="des-w01-sync-chk" type="checkbox" checked class="accent-cyan-400 rounded">
+                            <span>Sync</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Stairwell Window (W09 on SE Wall) 5-Way Presets -->
+                <div class="space-y-1 pt-1 border-t border-white/10">
+                    <div class="flex items-center justify-between">
+                        <span class="text-slate-300 font-medium">Stairwell Window (W09 SE)</span>
+                        <div class="flex items-center gap-1.5">
+                            <label class="flex items-center gap-1 text-[9px] text-slate-400 cursor-pointer" title="Obscure privacy glass facing Lot 5">
+                                <input id="des-stair-obscure-chk" type="checkbox" class="accent-sky-400 rounded">
+                                <span>Obscure</span>
+                            </label>
+                            <button id="des-focus-stair-btn" class="text-[9px] bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 px-1.5 py-0.5 rounded transition">Focus</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-5 gap-0.5 bg-black/40 p-0.5 rounded-lg" id="des-stair-btns">
+                        <button class="des-stair-btn seg-btn active-std" data-preset="none">None</button>
+                        <button class="des-stair-btn seg-btn" data-preset="slit">Slit</button>
+                        <button class="des-stair-btn seg-btn" data-preset="tall-slit">Tall Slit</button>
+                        <button class="des-stair-btn seg-btn" data-preset="long-slit">Long Slit</button>
+                        <button class="des-stair-btn seg-btn" data-preset="picture">Picture</button>
+                    </div>
+                </div>
+
+                <!-- Master Bed Layout Toggle (Partition Wall vs Under W02 Highlight Window) -->
+                <div class="flex items-center justify-between pt-1 border-t border-white/10">
+                    <span class="text-slate-300">Master Bed Wall</span>
+                    <div class="flex bg-black/40 p-0.5 rounded-lg gap-0.5">
+                        <button id="des-bed-part-btn" class="seg-btn active-sky">Partition Wall</button>
+                        <button id="des-bed-w02-btn" class="seg-btn">Under W02 (NW)</button>
+                    </div>
+                </div>
+            `;
+
+            if (tabWindows && winSelectEl && winSelectEl.parentElement) {
+                tabWindows.insertBefore(designerCard, winSelectEl.parentElement);
+            }
+
+            // =========================================================================
+            // 27F. DYNAMIC DROPDOWN, UI SYNC & STAIRWELL PRESET HELPERS
+            // =========================================================================
+            function getActiveOrderedIds() {
+                const ids = [];
+                BUILDER_SCHEDULE_ORDER.forEach(id => {
+                    if (id === 'W01' && DesignerWinState.tripleFrontW01) {
+                        ids.push('W01A', 'W01B', 'W01C');
+                    } else {
+                        ids.push(id);
+                    }
+                    if (id === 'W08' && DesignerWinState.stairWindowPreset !== 'none') {
+                        ids.push('W09');
+                    }
+                });
+                return ids;
+            }
+
+            function rebuildWindowSelectDropdown() {
+                const prev = winSelect.value;
+                const ids = getActiveOrderedIds();
+                winSelect.innerHTML = '';
+                ids.forEach(id => {
+                    const o = OPENING_STATE[id];
+                    if (!o) return;
+                    const opt = document.createElement('option');
+                    opt.value = o.id;
+                    opt.textContent = o.label;
+                    winSelect.appendChild(opt);
+                });
+
+                if (ids.includes(prev)) {
+                    winSelect.value = prev;
+                } else if (prev === 'W01' && ids.includes('W01A')) {
+                    winSelect.value = 'W01A';
+                } else if ((prev === 'W01A' || prev === 'W01B' || prev === 'W01C') && ids.includes('W01')) {
+                    winSelect.value = 'W01';
+                } else {
+                    winSelect.value = ids[0] || 'W02';
+                }
+            }
+
+            function applyStairWindowPreset(presetKey, focusAfter = false) {
+                const p = STAIR_WINDOW_PRESETS[presetKey] || STAIR_WINDOW_PRESETS.none;
+                DesignerWinState.stairWindowPreset = presetKey;
+                const w9 = OPENING_STATE.W09;
+                w9.width = p.width;
+                w9.sill = p.sill;
+                w9.head = p.head;
+                w9.type = p.type;
+                w9.obscure = DesignerWinState.stairWindowObscure;
+                w9.builderNote = p.note + (DesignerWinState.stairWindowObscure ? ' Obscure glass.' : '');
+
+                // Keep default upgrade quote proportional to window size
+                const estCosts = { none: 0, slit: 2200, 'tall-slit': 3600, 'long-slit': 2900, picture: 4400 };
+                if (SelectionsState.upgradeQuotes.stairwellWindow === undefined || presetKey !== 'none') {
+                    SelectionsState.upgradeQuotes.stairwellWindow = estCosts[presetKey] ?? 0;
+                }
+
+                rebuildWindowSelectDropdown();
+                if (presetKey !== 'none') winSelect.value = 'W09';
+                rebuildDynamicWallsAndOpenings();
+                syncDesignerUI();
+                populateWindowUI();
+                updateBudgetTelemetry();
+
+                if (focusAfter && w9.cam) {
+                    flyTo(new THREE.Vector3(...w9.cam.p), new THREE.Vector3(...w9.cam.t));
+                }
+            }
+
+            function syncDesignerUI() {
+                // Schedule preset 3-way highlight
+                if (schedDesignerBtn) {
+                    schedDesignerBtn.className = currentSchedulePreset === 'designer'
+                        ? 'bg-cyan-400 text-slate-950 font-bold py-1 rounded-lg transition'
+                        : 'text-slate-300 hover:text-white py-1 rounded-lg font-medium transition';
+                }
+                // W01 Single vs Triple
+                document.getElementById('des-w01-single-btn').className = 'seg-btn' + (!DesignerWinState.tripleFrontW01 ? ' active-std' : '');
+                document.getElementById('des-w01-triple-btn').className = 'seg-btn' + (DesignerWinState.tripleFrontW01 ? ' active-upg' : '');
+                document.getElementById('des-w01-sync-chk').checked = DesignerWinState.syncW01Triple;
+
+                // Stairwell 5-way preset buttons & obscure toggle
+                document.querySelectorAll('.des-stair-btn').forEach(b => {
+                    const active = b.dataset.preset === DesignerWinState.stairWindowPreset;
+                    b.className = 'des-stair-btn seg-btn' + (active ? (b.dataset.preset === 'none' ? ' active-std' : ' active-upg') : '');
+                });
+                document.getElementById('des-stair-obscure-chk').checked = DesignerWinState.stairWindowObscure;
+
+                // Master Bed Layout buttons
+                document.getElementById('des-bed-part-btn').className = 'seg-btn' + (DesignerWinState.masterBedLayout === 'partition' ? ' active-sky' : '');
+                document.getElementById('des-bed-w02-btn').className = 'seg-btn' + (DesignerWinState.masterBedLayout === 'underW02' ? ' active-sky' : '');
+            }
+
+            // =========================================================================
+            // 27G. EVENT LISTENERS FOR DESIGNER CONTROLS & 1.A/1.B/1.C SLIDER SYNC
+            // =========================================================================
+            if (schedDesignerBtn) {
+                schedDesignerBtn.addEventListener('click', () => {
+                    markCustomModified();
+                    DesignerWinState.tripleFrontW01 = true;
+                    DesignerWinState.masterBedLayout = 'underW02';
+                    if (DesignerWinState.stairWindowPreset === 'none') {
+                        DesignerWinState.stairWindowPreset = 'tall-slit';
+                    }
+                    applySchedulePreset('designer');
+                    applyStairWindowPreset(DesignerWinState.stairWindowPreset, false);
+                    InteriorRegistry.rebuildRoom('bed1');
+                    syncDesignerUI();
+                });
+            }
+
+            document.getElementById('des-w01-single-btn').addEventListener('click', () => {
+                markCustomModified();
+                DesignerWinState.tripleFrontW01 = false;
+                rebuildWindowSelectDropdown();
+                rebuildDynamicWallsAndOpenings();
+                populateWindowUI();
+                syncDesignerUI();
+                updateBudgetTelemetry();
+            });
+
+            document.getElementById('des-w01-triple-btn').addEventListener('click', () => {
+                markCustomModified();
+                DesignerWinState.tripleFrontW01 = true;
+                rebuildWindowSelectDropdown();
+                winSelect.value = 'W01A';
+                rebuildDynamicWallsAndOpenings();
+                populateWindowUI();
+                syncDesignerUI();
+                updateBudgetTelemetry();
+            });
+
+            document.getElementById('des-w01-sync-chk').addEventListener('change', (e) => {
+                DesignerWinState.syncW01Triple = e.target.checked;
+            });
+
+            document.querySelectorAll('.des-stair-btn').forEach(b => {
+                b.addEventListener('click', () => {
+                    markCustomModified();
+                    applyStairWindowPreset(b.dataset.preset, false);
+                });
+            });
+
+            document.getElementById('des-stair-obscure-chk').addEventListener('change', (e) => {
+                markCustomModified();
+                DesignerWinState.stairWindowObscure = e.target.checked;
+                OPENING_STATE.W09.obscure = e.target.checked;
+                if (DesignerWinState.stairWindowPreset !== 'none') {
+                    rebuildDynamicWallsAndOpenings();
+                }
+            });
+
+            document.getElementById('des-focus-stair-btn').addEventListener('click', () => {
+                const c = OPENING_STATE.W09.cam;
+                flyTo(new THREE.Vector3(...c.p), new THREE.Vector3(...c.t));
+            });
+
+            document.getElementById('des-focus-corner-btn').addEventListener('click', () => {
+                flyTo(new THREE.Vector3(26.5, 5.8, -10.5), new THREE.Vector3(20.2, 4.3, -4.1));
+            });
+
+            document.getElementById('des-bed-part-btn').addEventListener('click', () => {
+                DesignerWinState.masterBedLayout = 'partition';
+                InteriorRegistry.rebuildRoom('bed1');
+                syncDesignerUI();
+            });
+
+            document.getElementById('des-bed-w02-btn').addEventListener('click', () => {
+                DesignerWinState.masterBedLayout = 'underW02';
+                InteriorRegistry.rebuildRoom('bed1');
+                syncDesignerUI();
+            });
+
+            // Live 1.A / 1.B / 1.C Sync when user drags sliders or switches config/covering on any of the three
+            const syncTripleFromActive = () => {
+                const id = winSelect.value;
+                if (!DesignerWinState.syncW01Triple || !['W01A', 'W01B', 'W01C'].includes(id)) return;
+                const src = OPENING_STATE[id];
+                ['W01A', 'W01B', 'W01C'].forEach(otherId => {
+                    if (otherId === id) return;
+                    const dst = OPENING_STATE[otherId];
+                    dst.type = src.type;
+                    dst.width = src.width;
+                    dst.sill = src.sill;
+                    dst.head = src.head;
+                    dst.openPct = src.openPct;
+                    dst.covering = src.covering;
+                    dst.coverDrop = src.coverDrop;
+                });
+                rebuildDynamicWallsAndOpenings();
+            };
+
+            [winTypeSelect, winWidthSlider, winSillSlider, winHeadSlider, winOpenSlider, winCoverSelect, winCoverSlider].forEach(el => {
+                el.addEventListener('input', syncTripleFromActive);
+                el.addEventListener('change', syncTripleFromActive);
+            });
+
+            // =========================================================================
+            // 27H. NON-DESTRUCTIVE WRAPPERS (REV 1–4, BUILDER TABLE, BUDGET & JSON)
+            // =========================================================================
+            const _prevRebuildDynDes = rebuildDynamicWallsAndOpenings;
+            const _prevBuildHouseDes = buildHouse;
+            const _prevRebuildTrimsDes = rebuildTrimsAndDownpipes;
+            const _prevApplySchedDes = applySchedulePreset;
+            const _prevPopulateWinUI = populateWindowUI;
+            const _prevSyncUIDes = syncAllUIFromState;
+            const _prevGetOrderedRows = getOrderedScheduleRows;
+            const _prevRenderBuilderDes = renderBuilderSchedule;
+            const _prevGetCatalogDes = getSelectionsCatalog;
+            const _prevCaptureSnapDes = captureSpecSnapshot;
+            const _prevApplySnapDes = applySpecSnapshot;
+            const _prevInitDes = init;
+
+            rebuildDynamicWallsAndOpenings = function() {
+                _prevRebuildDynDes();
+                applyFrontBed1TripleSurgery();
+                applyStairwellWindowSurgery();
+            };
+
+            rebuildTrimsAndDownpipes = function() {
+                _prevRebuildTrimsDes();
+                refineCornerDownpipeAndStairSkirting();
+            };
+
+            buildHouse = function() {
+                _prevBuildHouseDes();
+                // Rev 3 & Rev 4 rebuild their own dynamic walls inside buildHouse(); re-apply surgery cleanly
+                if (currentRevision === 3 || currentRevision === 4) {
+                    applyFrontBed1TripleSurgery();
+                    applyStairwellWindowSurgery();
+                }
+                refineCornerDownpipeAndStairSkirting();
+            };
+
+            applySchedulePreset = function(presetKey) {
+                if (presetKey === 'rev1' || presetKey === 'updated') {
+                    DesignerWinState.tripleFrontW01 = false;
+                }
+                _prevApplySchedDes(presetKey);
+                rebuildWindowSelectDropdown();
+                populateWindowUI();
+                syncDesignerUI();
+            };
+
+            populateWindowUI = function() {
+                const o = OPENING_STATE[winSelect.value];
+                if (o) {
+                    // Allow negative sill relative to GF FFL for two-storey stairwell W09
+                    winSillSlider.min = (o.minSill !== undefined ? o.minSill : 0).toFixed(2);
+                }
+                _prevPopulateWinUI();
+                if (o && o.id === 'W09' && o.sill < 0) {
+                    const aboveLanding = Math.round((Y_GF_FFL + o.sill - ((Y_LGF_SSL + Y_GF_FFL) / 2)) * 1000);
+                    document.getElementById('win-sill-val').textContent = `${Math.round(o.sill * 1000)} mm (+${aboveLanding} landing)`;
+                }
+            };
+
+            syncAllUIFromState = function() {
+                _prevSyncUIDes();
+                syncDesignerUI();
+            };
+
+            // Ordered Builder Window Table & TSV Export (shows 1.A, 1.B, 1.C and W09 in order!)
+            getOrderedScheduleRows = function() {
+                const ids = getActiveOrderedIds();
+                return ids.map(id => {
+                    const o = OPENING_STATE[id];
+                    const cfg = getConfigMeta(o);
+                    const hMm = Math.round((o.head - o.sill) * 1000);
+                    const wMm = Math.round(o.width * 1000);
+                    const headMm = Math.round(o.head * 1000);
+                    const sillMm = Math.round(o.sill * 1000);
+                    const covText = (o.covering && o.covering !== 'none') ? `[${COVERING_LABELS[o.covering]}] ` : '';
+                    const displayId = id === 'W01A' ? '1.A' : id === 'W01B' ? '1.B' : id === 'W01C' ? '1.C' : o.id;
+                    const sillLabel = (id === 'W09' && sillMm < 0)
+                        ? `${sillMm} (${Math.round((Y_GF_FFL + o.sill - ((Y_LGF_SSL + Y_GF_FFL) / 2)) * 1000)} above landing)`
+                        : sillMm;
+                    return {
+                        id: displayId, room: o.room, height: hMm, width: wMm, head: headMm, sill: sillLabel,
+                        configCode: cfg.code, configLabel: cfg.label,
+                        notes: `${covText}${o.builderNote || ''}`.trim()
+                    };
+                });
+            };
+
+            renderBuilderSchedule = function() {
+                _prevRenderBuilderDes();
+                if (currentSchedulePreset === 'designer') {
+                    const sub = document.getElementById('builder-schedule-subtitle');
+                    if (sub) sub.textContent = sub.textContent.replace('Rev 1 Base Schedule', 'Designer Mod Schedule (1.A–1.C, W02, Corner Booth & W09)');
+                }
+            };
+
+            // Selections Export & Editable Upgrade Budget Integration
+            getSelectionsCatalog = function() {
+                const list = _prevGetCatalogDes();
+                const winIdx = list.findIndex(r => r.item === 'Window Schedule & Awning Specs');
+                if (winIdx >= 0 && (currentSchedulePreset === 'designer' || DesignerWinState.tripleFrontW01)) {
+                    list[winIdx] = {
+                        trade: '2. Windows & Doors',
+                        item: 'Window Schedule & Awning Specs',
+                        selection: 'Designer Mod Schedule (Front Triple 1.A/1.B/1.C + W02 1800×600 AFA + Corner Booth W04/W05)',
+                        status: 'UPGRADE',
+                        costKey: 'windowPreset',
+                        notes: 'Front Bed 1 split into 3 portrait windows w/ 360mm brick piers; W04/W05 stretched toward northern corner clear of downpipe.'
+                    };
+                }
+
+                // Add Stairwell Feature Window (W09) right below Window Schedule
+                const stPreset = DesignerWinState.stairWindowPreset;
+                const stMeta = STAIR_WINDOW_PRESETS[stPreset] || STAIR_WINDOW_PRESETS.none;
+                if (SelectionsState.upgradeQuotes.stairwellWindow === undefined) {
+                    SelectionsState.upgradeQuotes.stairwellWindow = stPreset === 'none' ? 0 : 3600;
+                }
+                const stRow = {
+                    trade: '2. Windows & Doors',
+                    item: 'Stairwell Feature Window (W09 SE)',
+                    selection: stPreset === 'none'
+                        ? 'None (Solid SE Stairwell Wall)'
+                        : `${stMeta.label} • ${DesignerWinState.stairWindowObscure ? 'Obscure Privacy Glass' : 'Clear Glass'}`,
+                    status: stPreset !== 'none' ? 'UPGRADE' : 'STD',
+                    costKey: stPreset !== 'none' ? 'stairwellWindow' : null,
+                    notes: stMeta.note
+                };
+                if (winIdx >= 0) list.splice(winIdx + 1, 0, stRow);
+                else list.push(stRow);
+
+                return list;
+            };
+
+            // Save / Load Spec JSON & 100% STD Blink Test Integration
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureSnapDes();
+                snap.designerWindows = { ...DesignerWinState };
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                if (snap && snap.designerWindows) {
+                    Object.assign(DesignerWinState, snap.designerWindows);
+                } else {
+                    // Clean revert during 100% STD Blink Test or older JSON files
+                    DesignerWinState.tripleFrontW01 = false;
+                    DesignerWinState.stairWindowPreset = 'none';
+                    DesignerWinState.stairWindowObscure = false;
+                    DesignerWinState.masterBedLayout = 'partition';
+                }
+                _prevApplySnapDes(snap, preserveQuotes);
+                rebuildWindowSelectDropdown();
+                rebuildDynamicWallsAndOpenings();
+                InteriorRegistry.rebuildRoom('bed1');
+                populateWindowUI();
+                syncDesignerUI();
+            };
+
+            init = function() {
+                _prevInitDes();
+                rebuildWindowSelectDropdown();
+                syncDesignerUI();
+            };
+        })();
+
+        // =========================================================================
+        // 28. DROP-IN MODULE: CUSTOM "MY DEFAULT" SELECTION PRESET & STARTUP LOADER
+        // Paste immediately above `window.onload = () => {`
+        // To update later: replace the JSON object inside MY_DEFAULT_SPEC.
+        // =========================================================================
+        (function initCustomDefaultSpecPlugin() {
+            const AUTO_LOAD_ON_STARTUP = true; // Set to false to only load when clicking "My Default"
+
+            const MY_DEFAULT_SPEC = {
+                "schemaVersion": 4,
+                "savedAt": "2026-11-24T03:18:49.586Z",
+                "property": "328 George Bass Drive, Lilli Pilli NSW 2536",
+                "revision": 3,
+                "schedulePreset": "designer",
+                "balustrade": "picket",
+                "brickName": "PGH Montauk",
+                "mortarName": "Natural Sand",
+                "matteState": {
+                    "roof": true,
+                    "cladding": true,
+                    "vcladding": true,
+                    "trim": true
+                },
+                "selections": {
+                    "roofColor": "Dune",
+                    "claddingColor": "Surfmist",
+                    "vcladdingColor": "Surfmist",
+                    "trimColor": "Surfmist",
+                    "roofProfile": "corrugated",
+                    "steelGrade": "classic",
+                    "downpipes": "colorbond",
+                    "balconyDeck": "modwood",
+                    "modwoodColor": "ModWood Silver Gum",
+                    "drivewayFinish": "exposed",
+                    "frontDoorColor": "Coastal Blue",
+                    "frontDoorGlass": "translucent",
+                    "flyScreens": true,
+                    "glazingSpec": "double",
+                    "plankColor": "Warm Driftwood",
+                    "mainFloorSpec": "hybrid",
+                    "plankDir": "length",
+                    "carpetColor": "Charcoal",
+                    "carpetSpec": "loop",
+                    "tileColor": "Speckled Terrazzo",
+                    "tileSpec": "ceramic",
+                    "wallPaint": "Whisper White",
+                    "trimPaint": "Lexicon Qtr",
+                    "trimProfile": "90tall",
+                    "vjFeature": "bedAndBooth",
+                    "kBaseColor": "Coastal Sage",
+                    "kOverColor": "Natural Ash",
+                    "kBenchColor": "Taj Mahal",
+                    "benchtopSpec": "laminate",
+                    "islandFront": "fluted",
+                    "splashback": "kitkat-sand",
+                    "hardwareFinish": "chrome",
+                    "showerScreen": "semi",
+                    "wallTileHeight": "full",
+                    "vanityMount": "kick",
+                    "ledMode": "auto",
+                    "ledTemp": "3000K",
+                    "pendants": "coastal",
+                    "acSpec": "single",
+                    "evCharger": "tesla32a",
+                    "budgetCap": 50000,
+                    "upgradeQuotes": {
+                        "revision2": 18500,
+                        "roofMatte": 2400,
+                        "roofProfile": 6800,
+                        "steelGrade": 4200,
+                        "downpipes": 1400,
+                        "balustrade": 4800,
+                        "drivewayFinish": 3600,
+                        "pghBricks": 4500,
+                        "mortarUpgrade": 950,
+                        "windowPreset": 5200,
+                        "glazingSpec": 9500,
+                        "mainFloorSpec": 3400,
+                        "carpetSpec": 1800,
+                        "tileSpec": 2200,
+                        "trimProfile": 1600,
+                        "vjFeature": 2800,
+                        "twoToneKitchen": 1200,
+                        "benchtopSpec": 5500,
+                        "islandFront": 2100,
+                        "splashback": 1400,
+                        "hardwareFinish": 2200,
+                        "showerScreen": 2600,
+                        "wallTileHeight": 4400,
+                        "pendants": 1100,
+                        "acSpec": 3800,
+                        "evCharger": 2400,
+                        "solarPv": 7300,
+                        "solarBattery": 11800,
+                        "stairwellWindow": 2200
+                    }
+                },
+                "openings": {
+                    "W01": { "width": 2.41, "sill": 0.69, "head": 2.15, "center": -2.86, "type": "awning-ffa", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Bed 1 • Front SW", "builderNote": "FFA awning config." },
+                    "W02": { "width": 1.8, "sill": 1.55, "head": 2.15, "center": 9.855, "type": "awning-flank", "openPct": 35, "covering": "none", "coverDrop": 60, "room": "Bed 1 • NW Highlight (Above Bed)", "builderNote": "1800W × 600H highlight window above Bed 1 bedhead (Sill 1550, Head 2150, AFA)." },
+                    "W03": { "width": 0.85, "sill": 1.29, "head": 2.15, "center": 13.095, "type": "awning-single", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Ensuite • NW Wall", "builderNote": "A (single awning), obscure glass." },
+                    "W04": { "width": 2.71, "sill": 1.03, "head": 2.06, "center": 19.48, "type": "awning-ffa", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Bench Dining • NW Corner", "builderNote": "Stretched toward northern corner (2710W × 1200H, 860mm booth sill, 575mm corner return clear of downpipe)." },
+                    "W05": { "width": 1.81, "sill": 1.02, "head": 2.06, "center": -3.45, "type": "awning-ffa", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Bench Dining • Rear NE Corner", "builderNote": "Stretched toward northern corner (1810W × 1200H, 860mm booth sill, 525mm corner return clear of downpipe)." },
+                    "W06": { "width": 1.81, "sill": 1.02, "head": 2.06, "center": 3.18, "type": "awning-aff", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Living Room • Rear NE", "builderNote": "Base 860mm (AFF)." },
+                    "W07": { "width": 1.81, "sill": 0.95, "head": 2.15, "center": -3.175, "type": "awning-fa", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Bed 3 • Lower Ground NE", "builderNote": "FA (Fixed + Awning)." },
+                    "W08": { "width": 1.81, "sill": 0.95, "head": 2.15, "center": 2.875, "type": "awning-af", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Bed 4 • Lower Rear NE", "builderNote": "AF (Awning + Fixed)." },
+                    "D01": { "width": 1.02, "sill": 0, "head": 2.04, "center": -0.07, "type": "hinged-door", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Entry • Front SW", "builderNote": "Hume Newington front door w/ Trilock (STD)." },
+                    "D02": { "width": 2.6, "sill": 0, "head": 2.1, "center": 2.66, "type": "garage-door", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Garage • Front SW", "builderNote": "B&D auto panel lift garage door w/ emba-seal (STD)." },
+                    "D07": { "width": 3.6, "sill": 0, "head": 2.1, "center": -0.15, "type": "bipart-door", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Balcony / Living • Rear NE", "builderNote": "QUESTION: Should this be slide FSSF? Alum. framed bi-part door." },
+                    "D10": { "width": 0.87, "sill": 0, "head": 2.04, "center": 16.305, "type": "glass-door", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Bathroom / L'dry • Lower NW", "builderNote": "QUESTION: Room to add window next to door, or door with integrated window & internal blind?" },
+                    "D13": { "width": 2.41, "sill": 0, "head": 2.04, "center": -0.145, "type": "sliding-door", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Rumpus • Lower Rear NE", "builderNote": "Alum. framed sliding door (2040H x 2410W)." },
+                    "W01A": { "width": 0.61, "sill": 0.35, "head": 2.15, "center": -3.83, "type": "awning-single", "openPct": 0, "covering": "venetian", "coverDrop": 0, "room": "Bed 1 • Front SW (Left)", "builderNote": "Front triple window 1.A (610W × 1800H, 360mm brick pier to 1.B)." },
+                    "W01B": { "width": 0.61, "sill": 0.35, "head": 2.15, "center": -2.86, "type": "awning-single", "openPct": 0, "covering": "venetian", "coverDrop": 0, "room": "Bed 1 • Front SW (Center)", "builderNote": "Front triple window 1.B (610W × 1800H, centered in Bed 1)." },
+                    "W01C": { "width": 0.61, "sill": 0.35, "head": 2.15, "center": -1.89, "type": "awning-single", "openPct": 0, "covering": "venetian", "coverDrop": 0, "room": "Bed 1 • Front SW (Right)", "builderNote": "Front triple window 1.C (610W × 1800H, 360mm brick pier to 1.B)." },
+                    "W09": { "width": 0.61, "sill": 0.35, "head": 2.15, "center": 16.035, "type": "fixed", "openPct": 0, "covering": "none", "coverDrop": 60, "room": "Stairwell • SE Wall", "builderNote": "Upper stairwell vertical slit (610W × 1800H, 350–2150mm above GF FFL)." }
+                },
+                "flora": [],
+                "solarEnergy": {
+                    "targetKw": 6.6,
+                    "batteryKwh": 0,
+                    "inverterKw": 5,
+                    "exportLimitKw": 15,
+                    "tariffKey": "ee_sunsoaker",
+                    "rates": {
+                        "name": "Essential Energy — Sun Soaker TOU (BLNRSS2)",
+                        "short": "EE Sun Soaker",
+                        "supplyDay": 1.75,
+                        "monthlySub": 0,
+                        "peakImport": 0.41,
+                        "offpeakImport": 0.238,
+                        "middayImport": 0.238,
+                        "flatFit": 0.05,
+                        "peakFit": 0.05,
+                        "middayExportFee": 0,
+                        "freeWindow": false,
+                        "smartShift": false
+                    },
+                    "usageMode": "hybrid",
+                    "airbnbOccScale": 1,
+                    "regularDailyKwh": 22,
+                    "airbnbOccKwh": 29,
+                    "airbnbVacKwh": 3.2,
+                    "evEnabled": true,
+                    "evWeeklyKwh": 40,
+                    "evChargerKw": 7,
+                    "evStrategy": "solar_soak",
+                    "activePlanes": { "nw": true, "se": true, "ne": true, "sw": false },
+                    "disabledPanelIds": [],
+                    "panelEditMode": false,
+                    "useRealShading": true,
+                    "selectedMonth": 5,
+                    "solarQuoteCost": 7300,
+                    "batteryQuoteCost": 11800
+                },
+                "designerWindows": {
+                    "tripleFrontW01": true,
+                    "syncW01Triple": true,
+                    "stairWindowPreset": "slit",
+                    "stairWindowObscure": true,
+                    "masterBedLayout": "underW02"
+                }
+            };
+
+            function loadMyDefaultSpec() {
+                blinkMode = 'custom';
+                customSpecBackup = null;
+                applySpecSnapshot(JSON.parse(JSON.stringify(MY_DEFAULT_SPEC)), false);
+                updateBlinkButtons();
+                updateBudgetTelemetry();
+            }
+
+            // 1. Add a "My Default" button into the Quick Coastal Palettes bar
+            const firstPaletteBtn = document.querySelector('.palette-preset-btn');
+            if (firstPaletteBtn && firstPaletteBtn.parentElement && !document.getElementById('palette-my-default-btn')) {
+                const bar = firstPaletteBtn.parentElement;
+                bar.classList.remove('grid-cols-4');
+                bar.classList.add('grid-cols-5');
+
+                const myDefBtn = document.createElement('button');
+                myDefBtn.id = 'palette-my-default-btn';
+                myDefBtn.className = 'bg-cyan-500/25 hover:bg-cyan-500/40 text-cyan-200 border border-cyan-400/35 py-1 px-1 rounded-lg font-bold transition truncate';
+                myDefBtn.title = 'Load Saved Default Spec (Rev 3 • PGH Montauk • Dune Matt • Designer Windows • 6.6kW Solar)';
+                myDefBtn.textContent = 'My Default';
+                myDefBtn.addEventListener('click', loadMyDefaultSpec);
+                bar.insertBefore(myDefBtn, firstPaletteBtn);
+            }
+
+            // 2. Allow header "My Spec" button to restore MY_DEFAULT_SPEC if no blink backup exists
+            const blinkCustomBtn = document.getElementById('blink-custom-btn');
+            if (blinkCustomBtn) {
+                blinkCustomBtn.addEventListener('click', () => {
+                    if (!customSpecBackup && blinkMode === 'custom') {
+                        loadMyDefaultSpec();
+                    }
+                });
+            }
+
+            // 3. Auto-apply saved default spec right after all plugins finish init()
+            const _prevInitCustomDef = init;
+            init = function() {
+                _prevInitCustomDef();
+                if (AUTO_LOAD_ON_STARTUP) {
+                    loadMyDefaultSpec();
+                }
+            };
+        })();
 
         window.onload = () => {
             init();
