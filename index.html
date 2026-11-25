@@ -8851,7 +8851,7 @@
                         addTableLamp(g, addCyl, bx, y + 0.485, innerNW + 0.26);
                     });
                     // Coastal Artwork on right Partition Wall (X = 11.53) & Corner Plant near Entry
-                    addWallPainting(g, addBox, 'Z', 11.53, y + 1.55, -2.75, 1.15, 0.80, -1, 0);
+                    addWallPainting(g, addBox, 'Z', 11.53, y + 1.55, -3.65, 1.15, 0.80, -1, 0);
                     addIndoorPlant(g, addCyl, bounds.X_FRONT_BED1 + 0.52, y + 0.005, bounds.Z_BED1_SE - 0.46, 1.05);
                 } else {
                     // Default Layout: King Bed against X = 11.52 partition wall facing front SW
@@ -8866,7 +8866,7 @@
                         addBox(g, 0.44, 0.48, 0.48, 11.24, y + 0.005, bz, furnMats.oak);
                         addTableLamp(g, addCyl, 11.24, y + 0.485, bz);
                     });
-                    addWallPainting(g, addBox, 'Z', 11.53, y + 1.65, -2.75, 1.25, 0.75, -1, 0);
+                    addWallPainting(g, addBox, 'Z', 11.53, y + 3.65, -2.75, 1.25, 0.75, -1, 0);
                     addIndoorPlant(g, addCyl, bounds.X_FRONT_BED1 + 0.55, y + 0.005, bounds.Z_NW + 0.55, 1.15);
                 }
             });
@@ -17785,117 +17785,131 @@
                 setTimeout(() => projectSelectionLabels(true), 120);
             };
         })();     
-        
-// =========================================================================
-        // 36B. DROP-IN FIX B: MODERN MOBILE APP UI SHELL, LARGE INTERACTIVE MAP,
-        //      MOBILE SOLAR & BUILDER PRICE CARDS & 3D TAGS DEFAULT-OFF
+
+        // =========================================================================
+        // 36B (v2). PHONE-FIRST MOBILE UI OVERHAUL (DOM PORTAL ARCHITECTURE)
+        //           Hides ALL desktop panels & GTX 1650 Eco on phones •
+        //           Large interactive Mini-Map • Tags Default OFF
         // Paste Sections 1 + 2 immediately above `window.onload = () => {`
         // =========================================================================
-        (function initModernMobileUiPlugin() {
-            const MOBILE_MAX_W = 820;
-            const IS_TOUCH_DEV = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+        (function initPhoneFirstMobileUiV2() {
+            const MOBILE_BP = 820;
+            const IS_TOUCH = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
-            const MobUi = {
-                isMobile: false,
-                activeSheet: null, // null | 'design' | 'views' | 'map' | 'solar' | 'sun'
-                specFilter: 'all', // 'all' | 'upg' | 'std'
-                tagsDefaultedOff: false,
-                prevMapWasVisibleDesktop: true
+            const Mob = {
+                active: false,
+                sheet: null,              // null | 'design' | 'views' | 'map' | 'more' | 'site'
+                specFilter: 'all',        // 'all' | 'upg' | 'std'
+                moreSubTab: 'price',      // 'price' | 'solar'
+                tagsDefaulted: false,
+                designEl: null,
+                designMarker: null,
+                designPortaled: false,
+                mapEl: null,
+                mapMarker: null,
+                mapOrigCss: '',
+                mapPortaled: false
             };
 
-            function detectMobileViewport() {
+            function isMobileScreen() {
                 const w = window.innerWidth;
                 const h = window.innerHeight;
-                return (w <= MOBILE_MAX_W) || (IS_TOUCH_DEV && h <= 500 && w <= 960);
+                return (w <= MOBILE_BP) || (IS_TOUCH && h <= 500 && w <= 960);
             }
 
-            function isFullscreenOverlayOpen() {
+            function isCinemaOrMultiOpen() {
                 const cin = document.getElementById('cinema-overlay');
                 const mv = document.getElementById('multiview-grid-overlay');
                 return Boolean((cin && !cin.classList.contains('hidden')) || (mv && !mv.classList.contains('hidden')));
             }
 
             // =========================================================================
-            // 36B-1. MODERN MOBILE CSS (CLEAN CANVAS, BOTTOM NAV, SHEETS & CARD MODALS)
+            // 1. PHONE-FIRST CSS (ZERO DESKTOP CLUTTER • FULL-WIDTH INTERACTIVE SHEETS)
             // =========================================================================
-            const m36bStyle = document.createElement('style');
-            m36bStyle.id = 'm36b-modern-mobile-css';
-            m36bStyle.textContent = `
-                /* ---------- HIDE BUSY DESKTOP CHROME ON MOBILE PHONES ---------- */
-                body.m36b-mobile [data-m34-role="header"],
-                body.m36b-mobile [data-m34-role="footer"],
-                body.m36b-mobile #pro-nav-lens-dock,
-                body.m36b-mobile #m34-corner-pill,
-                body.m36b-mobile #m34-drawer-scrim,
-                body.m36b-mobile #fps-room-bar,
-                body.m36b-mobile #eco-thermal-popover {
+            const styleEl = document.createElement('style');
+            styleEl.id = 'm36m-phone-first-css';
+            styleEl.textContent = `
+                /* ---- COMPLETELY HIDE ALL DESKTOP PANELS & GTX 1650 ECO ON PHONES ---- */
+                body.m36m-mobile #hud-wrapper,
+                body.m36m-mobile #pro-nav-lens-dock,
+                body.m36m-mobile #m34-corner-pill,
+                body.m36m-mobile #m34-drawer-scrim,
+                body.m36m-mobile #eco-thermal-pill-btn,
+                body.m36m-mobile #eco-thermal-popover,
+                body.m36m-mobile #fps-room-bar {
                     display: none !important;
                 }
 
-                /* Lift Walk Thumb-Pad cleanly above the 66px Mobile Bottom Nav Bar */
-                body.m36b-mobile #m34-touch-pad {
-                    bottom: calc(76px + env(safe-area-inset-bottom)) !important;
-                    left: 12px !important;
+                /* Keep Mini-Map hidden until user opens the dedicated full-width Map sheet */
+                body.m36m-mobile:not(.m36m-map-open) #pro-minimap-widget {
+                    display: none !important;
                 }
 
-                /* ---------- TOP-LEFT MINIMAL STATUS CHIP (REV + SUN TIME + ECO) ---------- */
-                #m36b-top-chip {
+                /* Lift Touch Walk Thumb-Pad cleanly above the 66px Mobile Bottom Nav */
+                body.m36m-mobile #m34-touch-pad {
+                    bottom: calc(78px + env(safe-area-inset-bottom)) !important;
+                    left: 12px !important;
+                    z-index: 52 !important;
+                }
+
+                /* ---- COMPACT TOP FLOATING BAR (MAXIMISES 3D HOUSE VIEWPORT) ---- */
+                #m36m-top-pill {
                     display: none;
                     position: fixed;
                     top: max(10px, env(safe-area-inset-top));
                     left: 10px;
-                    z-index: 48;
-                    background: rgba(15, 23, 42, 0.86);
+                    z-index: 52;
+                    background: rgba(15, 23, 42, 0.88);
                     backdrop-filter: blur(14px);
                     -webkit-backdrop-filter: blur(14px);
                     border: 1px solid rgba(255, 255, 255, 0.16);
                     border-radius: 9999px;
-                    padding: 7px 13px;
+                    padding: 8px 14px;
                     color: #f8fafc;
-                    font-size: 12.5px;
-                    font-weight: 600;
+                    font-size: 13px;
+                    font-weight: 700;
                     align-items: center;
                     gap: 8px;
-                    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.45);
+                    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.48);
                     pointer-events: auto;
                     cursor: pointer;
                 }
-                body.m36b-mobile:not(.m36b-overlay-active) #m36b-top-chip {
+                body.m36m-mobile:not(.m36m-overlay-open) #m36m-top-pill {
                     display: inline-flex;
                 }
 
-                /* Quick Exit 360°/Walk pill at top-right when walking on mobile */
-                #m36b-mode-pill {
+                #m36m-exit-walk-pill {
                     display: none;
                     position: fixed;
                     top: max(10px, env(safe-area-inset-top));
                     right: 10px;
-                    z-index: 48;
-                    background: rgba(56, 189, 248, 0.94);
+                    z-index: 52;
+                    background: #38bdf8;
                     color: #0f172a;
                     border: none;
                     border-radius: 9999px;
-                    padding: 7px 13px;
-                    font-size: 12px;
+                    padding: 8px 14px;
+                    font-size: 12.5px;
                     font-weight: 800;
-                    box-shadow: 0 8px 20px rgba(2, 6, 23, 0.4);
+                    box-shadow: 0 8px 22px rgba(2, 6, 23, 0.45);
                     pointer-events: auto;
+                    cursor: pointer;
                 }
-                body.m36b-mobile:not(.m36b-overlay-active) #m36b-mode-pill.m36b-show {
+                body.m36m-mobile:not(.m36m-overlay-open) #m36m-exit-walk-pill.m36m-show {
                     display: inline-flex;
                     align-items: center;
-                    gap: 6px;
+                    gap: 5px;
                 }
 
-                /* ---------- 4-BUTTON MODERN BOTTOM NAVIGATION BAR ---------- */
-                #m36b-bottom-nav {
+                /* ---- MODERN 4-BUTTON BOTTOM NAVIGATION BAR ---- */
+                #m36m-bottom-nav {
                     display: none;
                     position: fixed;
                     left: 0;
                     right: 0;
                     bottom: 0;
-                    z-index: 60;
-                    background: rgba(15, 23, 42, 0.94);
+                    z-index: 70;
+                    background: rgba(15, 23, 42, 0.96);
                     backdrop-filter: blur(18px);
                     -webkit-backdrop-filter: blur(18px);
                     border-top: 1px solid rgba(255, 255, 255, 0.14);
@@ -17903,476 +17917,503 @@
                     grid-template-columns: repeat(4, 1fr);
                     gap: 6px;
                     pointer-events: auto;
-                    box-shadow: 0 -10px 30px rgba(2, 6, 23, 0.55);
+                    box-shadow: 0 -10px 28px rgba(2, 6, 23, 0.58);
                 }
-                body.m36b-mobile:not(.m36b-overlay-active) #m36b-bottom-nav {
+                body.m36m-mobile:not(.m36m-overlay-open) #m36m-bottom-nav {
                     display: grid;
                 }
-                .m36b-nav-btn {
+                .m36m-nav-btn {
                     display: flex;
                     flex-direction: column;
                     align-items: center;
                     justify-content: center;
                     gap: 2px;
-                    min-height: 48px;
+                    min-height: 50px;
                     border-radius: 14px;
                     color: #cbd5e1;
-                    font-size: 11.5px;
+                    font-size: 12px;
                     font-weight: 700;
-                    letter-spacing: 0.01em;
                     background: transparent;
-                    transition: background 0.16s ease, color 0.16s ease, transform 0.1s ease;
+                    border: 1px solid transparent;
+                    transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
                 }
-                .m36b-nav-btn .m36b-ico {
-                    font-size: 17px;
+                .m36m-nav-btn .m36m-ico {
+                    font-size: 18px;
                     line-height: 1.05;
                 }
-                .m36b-nav-btn.m36b-active {
+                .m36m-nav-btn.m36m-active {
                     background: rgba(56, 189, 248, 0.22);
                     color: #38bdf8;
-                    border: 1px solid rgba(56, 189, 248, 0.42);
+                    border-color: rgba(56, 189, 248, 0.45);
                 }
-                .m36b-nav-btn:active {
+                .m36m-nav-btn:active {
                     transform: scale(0.96);
                 }
 
-                /* ---------- SHARED SHEET BACKDROP SCRIM ---------- */
-                #m36b-scrim {
+                /* ---- SHEET BACKDROP SCRIM (STRICTLY BELOW SHEETS!) ---- */
+                #m36m-scrim {
                     display: none;
                     position: fixed;
                     inset: 0;
-                    z-index: 49;
-                    background: rgba(2, 6, 23, 0.45);
+                    z-index: 58;
+                    background: rgba(2, 6, 23, 0.48);
                     pointer-events: auto;
                 }
-                body.m36b-mobile.m36b-has-sheet #m36b-scrim {
+                body.m36m-mobile.m36m-has-sheet #m36m-scrim {
                     display: block;
                 }
 
-                /* ---------- RE-STYLED NATIVE DESIGN SIDEBAR AS SLIDE-UP BOTTOM SHEET ---------- */
-                body.m36b-mobile [data-m34-role="sidebar"] {
-                    position: fixed !important;
-                    left: 0 !important;
-                    right: 0 !important;
-                    top: auto !important;
-                    bottom: calc(64px + env(safe-area-inset-bottom)) !important;
-                    width: 100vw !important;
-                    max-width: 100vw !important;
-                    height: 72dvh !important;
-                    max-height: calc(100dvh - 115px) !important;
-                    border-radius: 22px 22px 0 0 !important;
-                    border: 1px solid rgba(255, 255, 255, 0.16) !important;
-                    border-bottom: none !important;
-                    background: rgba(15, 23, 42, 0.96) !important;
-                    backdrop-filter: blur(18px) !important;
-                    -webkit-backdrop-filter: blur(18px) !important;
-                    padding: 0 14px 20px !important;
-                    z-index: 54 !important;
-                    overflow-y: auto !important;
-                    -webkit-overflow-scrolling: touch;
-                    transform: translateY(115%) !important;
-                    opacity: 0 !important;
-                    pointer-events: none !important;
-                    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease !important;
-                }
-                body.m36b-mobile.m36b-sheet-design [data-m34-role="sidebar"] {
-                    transform: translateY(0) !important;
-                    opacity: 1 !important;
-                    pointer-events: auto !important;
-                }
-
-                /* Larger, readable controls & swatches inside Mobile Design Sheet */
-                body.m36b-mobile [data-m34-role="sidebar"] .section-card {
-                    padding: 12px !important;
-                    border-radius: 14px !important;
-                    margin-bottom: 10px !important;
-                }
-                body.m36b-mobile [data-m34-role="sidebar"] button {
-                    min-height: 38px !important;
-                    font-size: 12px !important;
-                    padding: 6px 10px !important;
-                    border-radius: 10px !important;
-                }
-                body.m36b-mobile [data-m34-role="sidebar"] select {
-                    min-height: 40px !important;
-                    font-size: 13px !important;
-                    padding: 6px 10px !important;
-                }
-                body.m36b-mobile [data-m34-role="sidebar"] label {
-                    min-height: 40px !important;
-                    font-size: 12.5px !important;
-                }
-                body.m36b-mobile [data-m34-role="sidebar"] input[type="checkbox"] {
-                    width: 20px !important;
-                    height: 20px !important;
-                }
-                body.m36b-mobile [data-m34-role="sidebar"] input[type="range"] {
-                    height: 10px !important;
-                    margin: 6px 0 !important;
-                }
-                /* Enlarge colour swatches cleanly to 38px finger targets */
-                body.m36b-mobile [data-m34-role="sidebar"] [id*="swatches"] button,
-                body.m36b-mobile [data-m34-role="sidebar"] .swatch-btn {
-                    min-width: 38px !important;
-                    min-height: 38px !important;
-                }
-                /* Sticky Mobile Sheet Header inside Design Sidebar */
-                #m36b-design-sheet-hdr {
+                /* ---- TOP-LEVEL SLIDE-UP SHEETS (Z-INDEX 66 — ALWAYS ACTIVE & CRISP) ---- */
+                .m36m-sheet {
                     display: none;
-                    position: sticky;
-                    top: 0;
-                    z-index: 10;
-                    background: rgba(15, 23, 42, 0.98);
-                    margin: 0 -14px 10px;
-                    padding: 10px 14px;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-                    align-items: center;
-                    justify-content: space-between;
-                }
-                body.m36b-mobile #m36b-design-sheet-hdr {
-                    display: flex;
-                }
-
-                /* ---------- CUSTOM SLIDE-UP SHEETS (VIEWS / SOLAR & $ / SUN) ---------- */
-                .m36b-sheet {
                     position: fixed;
                     left: 0;
                     right: 0;
                     bottom: calc(64px + env(safe-area-inset-bottom));
-                    max-height: calc(100dvh - 118px);
-                    background: rgba(15, 23, 42, 0.96);
-                    backdrop-filter: blur(18px);
-                    -webkit-backdrop-filter: blur(18px);
-                    border-top: 1px solid rgba(255, 255, 255, 0.16);
-                    border-radius: 22px 22px 0 0;
-                    z-index: 55;
-                    overflow-y: auto;
-                    -webkit-overflow-scrolling: touch;
-                    color: #f1f5f9;
-                    box-shadow: 0 -14px 36px rgba(2, 6, 23, 0.65);
-                    transform: translateY(115%);
-                    opacity: 0;
-                    pointer-events: none;
-                    transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease;
-                }
-                body.m36b-mobile .m36b-sheet.m36b-open {
-                    transform: translateY(0);
-                    opacity: 1;
-                    pointer-events: auto;
-                }
-                .m36b-sheet-hdr {
-                    position: sticky;
-                    top: 0;
-                    z-index: 5;
+                    max-height: calc(100dvh - 108px);
                     background: rgba(15, 23, 42, 0.98);
+                    border-top: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 22px 22px 0 0;
+                    z-index: 66;
+                    flex-direction: column;
+                    color: #f8fafc;
+                    box-shadow: 0 -16px 40px rgba(2, 6, 23, 0.72);
+                    pointer-events: auto;
+                    overflow: hidden;
+                }
+                body.m36m-mobile .m36m-sheet.m36m-open {
+                    display: flex;
+                }
+                .m36m-sheet-hdr {
+                    flex: 0 0 auto;
                     padding: 12px 16px;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+                    background: rgba(15, 23, 42, 0.99);
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
+                    gap: 10px;
                 }
-                .m36b-pill-btn {
-                    min-height: 44px;
-                    border-radius: 12px;
+                .m36m-sheet-body {
+                    flex: 1 1 auto;
+                    overflow-y: auto;
+                    -webkit-overflow-scrolling: touch;
+                    padding: 14px 14px 20px;
+                }
+
+                /* Touch-friendly pill buttons inside custom mobile sheets */
+                .m36m-btn {
+                    min-height: 46px;
+                    border-radius: 13px;
                     padding: 8px 12px;
-                    font-size: 13px;
-                    font-weight: 600;
+                    font-size: 13.5px;
+                    font-weight: 700;
                     background: rgba(255, 255, 255, 0.08);
                     color: #e2e8f0;
-                    border: 1px solid rgba(255, 255, 255, 0.10);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     gap: 6px;
                     text-align: center;
                 }
-                .m36b-pill-btn.m36b-on {
+                .m36m-btn.m36m-on {
                     background: #38bdf8;
                     color: #0f172a;
                     border-color: #7dd3fc;
                     font-weight: 800;
                 }
-                .m36b-pill-btn.m36b-amber {
+                .m36m-btn.m36m-amber {
                     background: rgba(245, 158, 11, 0.24);
                     color: #fde68a;
                     border-color: rgba(251, 191, 36, 0.45);
                 }
-                .m36b-pill-btn.m36b-emerald {
+                .m36m-btn.m36m-emerald {
                     background: rgba(16, 185, 129, 0.24);
                     color: #6ee7b7;
                     border-color: rgba(52, 211, 153, 0.45);
                 }
 
-                /* ---------- LARGE HIGH-CONTRAST MOBILE MINI-MAP SHEET ---------- */
-                body.m36b-mobile:not(.m36b-sheet-map) #pro-minimap-widget {
-                    display: none !important;
-                }
-                body.m36b-mobile.m36b-sheet-map #pro-minimap-widget {
+                /* ---- REPARENTED LIVE DESIGN PANEL (OVERRIDES MODULE 34 COMPLETELY!) ---- */
+                body.m36m-mobile #m36m-design-portal-body > * {
+                    position: static !important;
+                    inset: auto !important;
+                    transform: none !important;
+                    opacity: 1 !important;
+                    pointer-events: auto !important;
                     display: block !important;
-                    position: fixed !important;
-                    left: 10px !important;
-                    right: 10px !important;
-                    top: auto !important;
-                    bottom: calc(74px + env(safe-area-inset-bottom)) !important;
-                    width: calc(100vw - 20px) !important;
-                    max-width: 480px !important;
-                    margin: 0 auto !important;
-                    z-index: 56 !important;
-                    border-radius: 20px !important;
-                    border: 1px solid rgba(56, 189, 248, 0.45) !important;
-                    background: rgba(15, 23, 42, 0.96) !important;
-                    box-shadow: 0 18px 46px rgba(2, 6, 23, 0.78) !important;
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    height: auto !important;
+                    max-height: none !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    border: none !important;
+                    background: transparent !important;
+                    box-shadow: none !important;
+                    overflow: visible !important;
                 }
-                body.m36b-mobile.m36b-sheet-map #mm-drag-handle {
-                    padding: 10px 12px !important;
+                body.m36m-mobile #m36m-design-portal-body .section-card {
+                    padding: 13px !important;
+                    border-radius: 14px !important;
+                    margin-bottom: 12px !important;
+                    background: rgba(255, 255, 255, 0.05) !important;
+                    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+                }
+                body.m36m-mobile #m36m-design-portal-body button {
+                    min-height: 40px !important;
+                    font-size: 13px !important;
+                    padding: 6px 10px !important;
+                    border-radius: 10px !important;
+                    pointer-events: auto !important;
+                }
+                body.m36m-mobile #m36m-design-portal-body select {
+                    min-height: 42px !important;
+                    font-size: 13.5px !important;
+                    padding: 8px 10px !important;
+                }
+                body.m36m-mobile #m36m-design-portal-body label {
+                    min-height: 40px !important;
                     font-size: 13px !important;
                 }
-                body.m36b-mobile.m36b-sheet-map #pro-minimap-widget .mm-flr-btn,
-                body.m36b-mobile.m36b-sheet-map #mm-close-btn {
-                    min-height: 36px !important;
-                    min-width: 38px !important;
-                    padding: 4px 10px !important;
-                    font-size: 12px !important;
-                    border-radius: 10px !important;
+                body.m36m-mobile #m36m-design-portal-body input[type="checkbox"] {
+                    width: 22px !important;
+                    height: 22px !important;
                 }
-                body.m36b-mobile.m36b-sheet-map #mm-size-btn {
-                    display: none !important;
+                body.m36m-mobile #m36m-design-portal-body input[type="range"] {
+                    height: 10px !important;
+                    margin: 8px 0 !important;
                 }
-                body.m36b-mobile.m36b-sheet-map #pro-minimap-canvas {
-                    width: 100% !important;
-                    height: auto !important;
-                    min-height: 215px !important;
-                    max-height: 54dvh !important;
-                }
-                body.m36b-mobile.m36b-sheet-map #mm-hint-bar {
-                    padding: 8px 12px !important;
-                    font-size: 12px !important;
-                    color: #cbd5e1 !important;
+                body.m36m-mobile #m36m-design-portal-body [id*="swatches"] button,
+                body.m36m-mobile #m36m-design-portal-body .swatch-btn {
+                    min-width: 40px !important;
+                    min-height: 40px !important;
                 }
 
-                /* ---------- MOBILE-NATIVE SOLAR & BUILDER PRICE LIST MODALS ---------- */
-                body.m36b-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer):not(#m34-drawer-scrim):not(#m36b-scrim):not(.hidden) {
+                /* ---- REPARENTED LARGE INTERACTIVE FLOOR PLAN MINI-MAP ---- */
+                body.m36m-mobile #m36m-map-portal-body #pro-minimap-widget {
+                    display: block !important;
+                    position: static !important;
+                    inset: auto !important;
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    margin: 0 !important;
+                    background: transparent !important;
+                    border: none !important;
+                    box-shadow: none !important;
+                    pointer-events: auto !important;
+                }
+                body.m36m-mobile #m36m-map-portal-body #mm-drag-handle {
+                    padding: 0 0 10px !important;
+                    background: transparent !important;
+                    border-bottom: none !important;
+                    cursor: default !important;
+                }
+                body.m36m-mobile #m36m-map-portal-body .mm-flr-btn {
+                    min-height: 40px !important;
+                    min-width: 52px !important;
+                    font-size: 13px !important;
+                    font-weight: 700 !important;
+                    border-radius: 10px !important;
+                }
+                body.m36m-mobile #m36m-map-portal-body #mm-size-btn,
+                body.m36m-mobile #m36m-map-portal-body #mm-close-btn {
+                    display: none !important;
+                }
+                body.m36m-mobile #m36m-map-portal-body #pro-minimap-canvas {
+                    display: block !important;
+                    width: 100% !important;
+                    height: auto !important;
+                    min-height: 240px !important;
+                    max-height: 55dvh !important;
+                    border-radius: 14px !important;
+                    border: 1px solid rgba(56, 189, 248, 0.35) !important;
+                }
+                body.m36m-mobile #m36m-map-portal-body #mm-hint-bar {
+                    padding: 10px 4px 0 !important;
+                    font-size: 12.5px !important;
+                    color: #cbd5e1 !important;
+                    text-align: center !important;
+                }
+
+                /* ---- FULL-SCREEN MOBILE FORMAT FOR NATIVE SOLAR & QUOTE MODALS ---- */
+                body.m36m-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer):not(#m34-drawer-scrim):not(#m36m-scrim):not(.hidden) {
                     padding: 0 !important;
+                    z-index: 90 !important;
                     align-items: stretch !important;
                     justify-content: stretch !important;
-                    z-index: 80 !important;
                 }
-                body.m36b-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer):not(#m34-drawer-scrim):not(#m36b-scrim):not(.hidden) > div {
+                body.m36m-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer):not(#m34-drawer-scrim):not(#m36m-scrim):not(.hidden) > div {
                     width: 100vw !important;
                     max-width: 100vw !important;
                     height: 100dvh !important;
                     max-height: 100dvh !important;
                     border-radius: 0 !important;
                     margin: 0 !important;
-                    padding: 14px 14px calc(20px + env(safe-area-inset-bottom)) !important;
+                    padding: 14px 14px calc(22px + env(safe-area-inset-bottom)) !important;
                     overflow-y: auto !important;
                     -webkit-overflow-scrolling: touch;
                 }
-                body.m36b-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer) button {
-                    min-height: 40px;
-                    font-size: 13px;
+                body.m36m-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer) .grid-cols-2,
+                body.m36m-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer) .grid-cols-3,
+                body.m36m-mobile .fixed.inset-0:not(#multiview-grid-overlay):not(#cinema-overlay):not(#m35-labels-layer) .grid-cols-4 {
+                    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
                 }
-                /* Automatically stack multi-column modal tables into clean mobile cards */
-                body.m36b-mobile .fixed.inset-0 table {
+                body.m36m-mobile .fixed.inset-0 table {
                     display: block !important;
                     width: 100% !important;
                 }
-                body.m36b-mobile .fixed.inset-0 table thead {
-                    display: none !important;
-                }
-                body.m36b-mobile .fixed.inset-0 table tbody {
+                body.m36m-mobile .fixed.inset-0 table thead { display: none !important; }
+                body.m36m-mobile .fixed.inset-0 table tbody {
                     display: flex !important;
                     flex-direction: column !important;
                     gap: 8px !important;
                     width: 100% !important;
                 }
-                body.m36b-mobile .fixed.inset-0 table tr {
+                body.m36m-mobile .fixed.inset-0 table tr {
                     display: flex !important;
                     flex-wrap: wrap !important;
-                    align-items: center !important;
                     justify-content: space-between !important;
                     gap: 4px 10px !important;
-                    padding: 11px 12px !important;
+                    padding: 12px !important;
                     border-radius: 12px !important;
-                    background: rgba(255, 255, 255, 0.05) !important;
-                    border: 1px solid rgba(255, 255, 255, 0.10) !important;
-                    width: 100% !important;
+                    background: rgba(255, 255, 255, 0.06) !important;
+                    border: 1px solid rgba(255, 255, 255, 0.12) !important;
                 }
-                body.m36b-mobile .fixed.inset-0 table td {
+                body.m36m-mobile .fixed.inset-0 table td {
                     display: block !important;
-                    padding: 2px 0 !important;
                     border: none !important;
+                    padding: 2px 0 !important;
                     font-size: 13px !important;
-                    line-height: 1.35 !important;
-                    max-width: 100% !important;
                     white-space: normal !important;
                 }
-                body.m36b-mobile .fixed.inset-0 table td:first-child {
-                    font-weight: 700 !important;
-                    color: #f8fafc !important;
-                    flex: 1 1 65% !important;
-                }
-                body.m36b-mobile .fixed.inset-0 table td:last-child {
-                    font-weight: 700 !important;
-                    color: #34d399 !important;
-                }
-                /* Larger Cinema & Multi-View Exit buttons on phones */
-                body.m36b-mobile #cinema-exit-btn,
-                body.m36b-mobile #mv-exit-btn {
-                    min-height: 40px !important;
+                body.m36m-mobile #cinema-exit-btn,
+                body.m36m-mobile #mv-exit-btn {
+                    min-height: 42px !important;
                     padding: 8px 14px !important;
-                    font-size: 13px !important;
+                    font-size: 13.5px !important;
                 }
             `;
-            document.head.appendChild(m36bStyle);
+            document.head.appendChild(styleEl);
 
             // =========================================================================
-            // 36B-2. DEFAULT 3D SELECTION TAGS TO OFF (DESKTOP + MOBILE)
+            // 2. DEFAULT 3D SELECTION TAGS TO OFF ON LOAD (DESKTOP + MOBILE)
             // =========================================================================
-            function forceLabelsOffOnce() {
-                if (MobUi.tagsDefaultedOff) return;
-                const btn = document.getElementById('nav-labels-btn');
-                if (!btn) return;
+            function set3DTagsOffByDefault() {
+                if (Mob.tagsDefaulted) return;
+                const lblBtn = document.getElementById('nav-labels-btn');
+                if (!lblBtn) return;
                 let guard = 0;
-                while (btn.textContent && !btn.textContent.includes('Off') && guard < 4) {
-                    btn.click();
+                while (lblBtn.textContent && !lblBtn.textContent.includes('Off') && guard < 4) {
+                    lblBtn.click();
                     guard++;
                 }
-                MobUi.tagsDefaultedOff = true;
+                Mob.tagsDefaulted = true;
             }
 
             // =========================================================================
-            // 36B-3. CORE MOBILE SHELL ELEMENTS (TOP CHIP, SCRIM, BOTTOM NAV BAR)
+            // 3. CORE MOBILE SHELL + DESIGN & MAP PORTAL SHEETS
             // =========================================================================
-            const topChip = document.createElement('button');
-            topChip.id = 'm36b-top-chip';
-            topChip.innerHTML = `
-                <span id="m36b-eco-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
-                <span id="m36b-top-rev">Rev 4</span>
+            const topPill = document.createElement('button');
+            topPill.id = 'm36m-top-pill';
+            topPill.innerHTML = `
+                <span class="text-sky-400">🏠</span>
+                <span id="m36m-top-rev">Rev 4</span>
                 <span class="text-slate-500">•</span>
-                <span id="m36b-top-time" class="font-mono text-amber-300">10:30 AM</span>
-                <span class="text-[10px] text-slate-400">▾</span>
+                <span id="m36m-top-time" class="font-mono text-amber-300">10:30 AM</span>
+                <span class="text-xs text-slate-400">▾</span>
             `;
-            document.body.appendChild(topChip);
+            document.body.appendChild(topPill);
 
-            const modePill = document.createElement('button');
-            modePill.id = 'm36b-mode-pill';
-            modePill.textContent = '✕ Exit 360°';
-            document.body.appendChild(modePill);
+            const exitWalkPill = document.createElement('button');
+            exitWalkPill.id = 'm36m-exit-walk-pill';
+            exitWalkPill.textContent = '✕ Exit 360°';
+            document.body.appendChild(exitWalkPill);
 
-            const scrimEl = document.createElement('div');
-            scrimEl.id = 'm36b-scrim';
-            document.body.appendChild(scrimEl);
+            const scrim = document.createElement('div');
+            scrim.id = 'm36m-scrim';
+            document.body.appendChild(scrim);
 
             const bottomNav = document.createElement('nav');
-            bottomNav.id = 'm36b-bottom-nav';
+            bottomNav.id = 'm36m-bottom-nav';
             bottomNav.setAttribute('aria-label', 'Mobile Navigation');
             bottomNav.innerHTML = `
-                <button class="m36b-nav-btn" data-sheet="design">
-                    <span class="m36b-ico">🎨</span>
-                    <span>Design</span>
+                <button class="m36m-nav-btn" data-sheet="design">
+                    <span class="m36m-ico">🎨</span><span>Design</span>
                 </button>
-                <button class="m36b-nav-btn" data-sheet="views">
-                    <span class="m36b-ico">📷</span>
-                    <span>Views</span>
+                <button class="m36m-nav-btn" data-sheet="views">
+                    <span class="m36m-ico">📷</span><span>Views</span>
                 </button>
-                <button class="m36b-nav-btn" data-sheet="map">
-                    <span class="m36b-ico">🗺️</span>
-                    <span>Map</span>
+                <button class="m36m-nav-btn" data-sheet="map">
+                    <span class="m36m-ico">🗺️</span><span>Map</span>
                 </button>
-                <button class="m36b-nav-btn" data-sheet="solar">
-                    <span class="m36b-ico">☀️</span>
-                    <span>Solar & $</span>
+                <button class="m36m-nav-btn" data-sheet="more">
+                    <span class="m36m-ico">💰</span><span>Price & ☀️</span>
                 </button>
             `;
             document.body.appendChild(bottomNav);
 
-            // Inject sticky header inside native Design Sidebar for effortless mobile closing
-            function ensureDesignSheetHeader() {
-                const sb = document.querySelector('[data-m34-role="sidebar"]');
-                if (!sb || document.getElementById('m36b-design-sheet-hdr')) return;
-                const hdr = document.createElement('div');
-                hdr.id = 'm36b-design-sheet-hdr';
-                hdr.innerHTML = `
+            // Dedicated Top-Level Sheet for the Live Design Sidebar Portal
+            const designSheet = document.createElement('div');
+            designSheet.id = 'm36m-sheet-design';
+            designSheet.className = 'm36m-sheet';
+            designSheet.innerHTML = `
+                <div class="m36m-sheet-hdr">
                     <div class="flex items-center gap-2">
-                        <span class="text-base">🎨</span>
-                        <span class="text-sm font-bold text-white">Design & Materials</span>
+                        <span class="text-lg">🎨</span>
+                        <span class="text-sm font-extrabold text-white">Design & Materials</span>
                     </div>
-                    <button id="m36b-close-design-btn" class="px-3.5 py-1.5 rounded-xl bg-white/10 text-slate-100 text-xs font-bold">Done</button>
-                `;
-                sb.insertBefore(hdr, sb.firstChild);
-                hdr.querySelector('#m36b-close-design-btn').addEventListener('click', () => setActiveSheet(null));
+                    <button class="m36m-close px-4 py-2 rounded-xl bg-white/15 text-white text-xs font-extrabold">Done</button>
+                </div>
+                <div id="m36m-design-portal-body" class="m36m-sheet-body"></div>
+            `;
+            document.body.appendChild(designSheet);
+
+            // Dedicated Top-Level Sheet for the Large Full-Width Interactive Floor Plan Portal
+            const mapSheet = document.createElement('div');
+            mapSheet.id = 'm36m-sheet-map';
+            mapSheet.className = 'm36m-sheet';
+            mapSheet.innerHTML = `
+                <div class="m36m-sheet-hdr">
+                    <div class="flex items-center gap-2">
+                        <span class="text-lg">🗺️</span>
+                        <span class="text-sm font-extrabold text-white">Interactive Floor Plan</span>
+                    </div>
+                    <button class="m36m-close px-4 py-2 rounded-xl bg-white/15 text-white text-xs font-extrabold">Done</button>
+                </div>
+                <div id="m36m-map-portal-body" class="m36m-sheet-body"></div>
+            `;
+            document.body.appendChild(mapSheet);
+
+            // =========================================================================
+            // 4. SAFE DOM PORTAL MOUNT / RESTORE (DESIGN SIDEBAR & MINI-MAP)
+            // =========================================================================
+            function findDesignContainer() {
+                if (Mob.designEl && Mob.designEl.isConnected) return Mob.designEl;
+                let el = document.querySelector('[data-m34-role="sidebar"]');
+                if (!el) {
+                    const tabInt = document.getElementById('tab-interior');
+                    const hud = document.getElementById('hud-wrapper');
+                    if (tabInt) {
+                        let cur = tabInt;
+                        while (cur && cur.parentElement && cur.parentElement !== hud && cur.parentElement !== document.body) {
+                            if (cur.querySelector('#tab-exterior') && cur.querySelector('#tab-interior')) {
+                                el = cur;
+                                break;
+                            }
+                            cur = cur.parentElement;
+                        }
+                        if (!el) el = tabInt.parentElement;
+                    }
+                }
+                if (el && !Mob.designMarker && el.parentNode) {
+                    Mob.designMarker = document.createComment('m36m-design-home');
+                    el.parentNode.insertBefore(Mob.designMarker, el);
+                }
+                Mob.designEl = el;
+                return el;
             }
-    // =========================================================================
-            // 36B-4. MOBILE "VIEWS & CAMERA" SLIDE-UP SHEET
+
+            function mountDesignPortal(toMobile) {
+                const el = findDesignContainer();
+                const host = document.getElementById('m36m-design-portal-body');
+                if (!el || !host) return;
+                if (toMobile && !Mob.designPortaled) {
+                    host.appendChild(el);
+                    Mob.designPortaled = true;
+                } else if (!toMobile && Mob.designPortaled && Mob.designMarker && Mob.designMarker.parentNode) {
+                    Mob.designMarker.parentNode.insertBefore(el, Mob.designMarker.nextSibling);
+                    Mob.designPortaled = false;
+                }
+            }
+
+            function mountMapPortal(toMobile) {
+                const mm = document.getElementById('pro-minimap-widget');
+                const host = document.getElementById('m36m-map-portal-body');
+                if (!mm || !host) return;
+
+                if (!Mob.mapMarker && mm.parentNode) {
+                    Mob.mapEl = mm;
+                    Mob.mapOrigCss = mm.style.cssText || '';
+                    Mob.mapMarker = document.createComment('m36m-map-home');
+                    mm.parentNode.insertBefore(Mob.mapMarker, mm);
+                }
+
+                if (toMobile && !Mob.mapPortaled) {
+                    host.appendChild(mm);
+                    Mob.mapPortaled = true;
+                } else if (!toMobile && Mob.mapPortaled && Mob.mapMarker && Mob.mapMarker.parentNode) {
+                    Mob.mapMarker.parentNode.insertBefore(mm, Mob.mapMarker.nextSibling);
+                    mm.style.cssText = Mob.mapOrigCss;
+                    Mob.mapPortaled = false;
+                }
+            }
+// =========================================================================
+            // 5. MOBILE "VIEWS & CAMERA" SHEET
             // =========================================================================
             const viewsSheet = document.createElement('div');
-            viewsSheet.id = 'm36b-sheet-views';
-            viewsSheet.className = 'm36b-sheet';
+            viewsSheet.id = 'm36m-sheet-views';
+            viewsSheet.className = 'm36m-sheet';
             viewsSheet.innerHTML = `
-                <div class="m36b-sheet-hdr">
+                <div class="m36m-sheet-hdr">
                     <div class="flex items-center gap-2">
-                        <span class="text-base">📷</span>
-                        <span class="text-sm font-bold text-white">Camera & Views</span>
+                        <span class="text-lg">📷</span>
+                        <span class="text-sm font-extrabold text-white">Camera & Views</span>
                     </div>
-                    <button class="m36b-sheet-close px-3.5 py-1.5 rounded-xl bg-white/10 text-slate-100 text-xs font-bold">Done</button>
+                    <button class="m36m-close px-4 py-2 rounded-xl bg-white/15 text-white text-xs font-extrabold">Done</button>
                 </div>
 
-                <div class="p-4 space-y-4">
-                    <!-- Primary Navigation Modes -->
+                <div class="m36m-sheet-body space-y-4">
                     <div class="space-y-1.5">
                         <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Navigation Mode</div>
                         <div class="grid grid-cols-2 gap-2">
-                            <button id="m36b-v-orbit" class="m36b-pill-btn">🌐 Orbit View</button>
-                            <button id="m36b-v-tripod" class="m36b-pill-btn">🧭 360° Tripod</button>
-                            <button id="m36b-v-cinema" class="m36b-pill-btn m36b-amber">🎬 Cinema Tour</button>
-                            <button id="m36b-v-4up" class="m36b-pill-btn">⊞ 4-Up Iso Grid</button>
+                            <button id="m36m-v-orbit" class="m36m-btn">🌐 Orbit View</button>
+                            <button id="m36m-v-tripod" class="m36m-btn">🧭 360° Tripod</button>
+                            <button id="m36m-v-cinema" class="m36m-btn m36m-amber">🎬 Cinema Tour</button>
+                            <button id="m36m-v-4up" class="m36m-btn">⊞ 4-Up Iso Grid</button>
                         </div>
                     </div>
 
-                    <!-- Architectural Lens Width & Solid Walls -->
                     <div class="space-y-1.5">
-                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Camera Lens & Movement</div>
+                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Lens & Movement</div>
                         <div class="grid grid-cols-4 gap-1.5">
-                            <button class="m36b-lens-btn m36b-pill-btn" data-lens="50mm">50mm</button>
-                            <button class="m36b-lens-btn m36b-pill-btn" data-lens="24mm">24mm</button>
-                            <button class="m36b-lens-btn m36b-pill-btn" data-lens="16mm">16mm</button>
-                            <button class="m36b-lens-btn m36b-pill-btn" data-lens="12mm">12mm</button>
+                            <button class="m36m-lens-btn m36m-btn" data-lens="50mm">50mm</button>
+                            <button class="m36m-lens-btn m36m-btn" data-lens="24mm">24mm</button>
+                            <button class="m36m-lens-btn m36m-btn" data-lens="16mm">16mm</button>
+                            <button class="m36m-lens-btn m36m-btn" data-lens="12mm">12mm</button>
                         </div>
                         <div class="grid grid-cols-2 gap-2 pt-1">
-                            <button id="m36b-v-vlock" class="m36b-pill-btn">📐 2-Pt Vertical</button>
-                            <button id="m36b-v-walls" class="m36b-pill-btn m36b-emerald">🧱 Walls: Solid</button>
+                            <button id="m36m-v-vlock" class="m36m-btn">📐 2-Pt Vertical</button>
+                            <button id="m36m-v-walls" class="m36m-btn m36m-emerald">🧱 Walls: Solid</button>
                         </div>
                     </div>
 
-                    <!-- Floor Cutaways, Garage Door & 3D Labels -->
                     <div class="space-y-1.5">
-                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">House Cutaway & Toggles</div>
+                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Cutaway, Garage & Labels</div>
                         <div class="grid grid-cols-3 gap-1.5">
-                            <button id="m36b-cut-full" class="m36b-pill-btn">Full</button>
-                            <button id="m36b-cut-gf" class="m36b-pill-btn">Upper Plan</button>
-                            <button id="m36b-cut-lgf" class="m36b-pill-btn">Lower Plan</button>
+                            <button id="m36m-cut-full" class="m36m-btn">Full</button>
+                            <button id="m36m-cut-gf" class="m36m-btn">Upper Plan</button>
+                            <button id="m36m-cut-lgf" class="m36m-btn">Lower Plan</button>
                         </div>
                         <div class="grid grid-cols-2 gap-2 pt-1">
-                            <button id="m36b-v-garage" class="m36b-pill-btn m36b-amber">🚗 Garage: Closed</button>
-                            <button id="m36b-v-tags" class="m36b-pill-btn">🏷️ Tags: Off</button>
+                            <button id="m36m-v-garage" class="m36m-btn m36m-amber">🚗 Garage: Closed</button>
+                            <button id="m36m-v-tags" class="m36m-btn">🏷️ Tags: Off</button>
                         </div>
                     </div>
 
-                    <!-- Quick Viewpoint & Room Jumps -->
                     <div class="space-y-1.5">
-                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Jump to Viewpoint</div>
+                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Jump to Room / Viewpoint</div>
                         <div class="grid grid-cols-2 gap-2">
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="front">🏠 Front Street</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="rear">🌿 Rear & Balcony</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="top">🛰️ Overhead Site</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="kitchen">🍳 Kitchen & Booth</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="living">🛋️ Living & TV</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="balcony">🌅 Balcony Seat</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="bed1">🛏️ Master Bed 1</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="ensuite">🚿 Ensuite & WIR</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="rumpus">🎮 Lower Rumpus</button>
-                            <button class="m36b-jump-btn m36b-pill-btn" data-jump="bath">🧺 Bath & Laundry</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="front">🏠 Front Street</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="rear">🌿 Rear & Balcony</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="top">🛰️ Overhead Site</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="kitchen">🍳 Kitchen & Booth</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="living">🛋️ Living & TV</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="balcony">🌅 Balcony Seat</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="bed1">🛏️ Master Bed 1</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="ensuite">🚿 Ensuite & WIR</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="rumpus">🎮 Lower Rumpus</button>
+                            <button class="m36m-jump-btn m36m-btn" data-jump="bath">🧺 Bath & Laundry</button>
                         </div>
                     </div>
                 </div>
@@ -18380,206 +18421,170 @@
             document.body.appendChild(viewsSheet);
 
             // =========================================================================
-            // 36B-5. MOBILE "SUN, REVISION & ECO" QUICK SHEET (TOP CHIP TAP)
+            // 6. MOBILE "SITE INFO, REV 1–4, SUN & SAVE/LOAD JSON" SHEET (TOP PILL TAP)
+            //    (GTX 1650 Eco intentionally omitted — Desktop only!)
             // =========================================================================
-            const sunSheet = document.createElement('div');
-            sunSheet.id = 'm36b-sheet-sun';
-            sunSheet.className = 'm36b-sheet';
-            sunSheet.innerHTML = `
-                <div class="m36b-sheet-hdr">
+            const siteSheet = document.createElement('div');
+            siteSheet.id = 'm36m-sheet-site';
+            siteSheet.className = 'm36m-sheet';
+            siteSheet.innerHTML = `
+                <div class="m36m-sheet-hdr">
                     <div class="flex items-center gap-2">
-                        <span class="text-base">🌤️</span>
-                        <span class="text-sm font-bold text-white">Sun, Revision & Performance</span>
+                        <span class="text-lg">🏠</span>
+                        <span class="text-sm font-extrabold text-white">Site, Revision & Sun</span>
                     </div>
-                    <button class="m36b-sheet-close px-3.5 py-1.5 rounded-xl bg-white/10 text-slate-100 text-xs font-bold">Done</button>
+                    <button class="m36m-close px-4 py-2 rounded-xl bg-white/15 text-white text-xs font-extrabold">Done</button>
                 </div>
 
-                <div class="p-4 space-y-4">
-                    <!-- Sun Time & Season -->
-                    <div class="space-y-2 bg-white/5 rounded-2xl p-3.5 border border-white/10">
-                        <div class="flex items-center justify-between text-xs">
-                            <span class="font-bold text-amber-300 uppercase">Time of Day</span>
-                            <span id="m36b-sun-time-val" class="font-mono text-sm font-bold text-white">10:30 AM</span>
+                <div class="m36m-sheet-body space-y-4">
+                    <!-- Compact Lilli Pilli Site Info Summary -->
+                    <div class="bg-white/5 rounded-2xl p-3.5 border border-white/10 space-y-2">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-xs font-extrabold text-sky-300 uppercase tracking-wide">Lilli Pilli • Eurobodalla NSW</div>
+                            <span id="m36m-site-rev-badge" class="px-2 py-0.5 rounded-md bg-sky-400/20 text-sky-200 border border-sky-400/35 font-mono text-[11px] font-bold">Rev 4</span>
                         </div>
-                        <input id="m36b-sun-time-sl" type="range" min="5.5" max="20.5" step="0.1" value="10.5" class="w-full accent-amber-400 h-2.5 bg-slate-700 rounded-lg cursor-pointer">
-                        <div class="grid grid-cols-3 gap-1.5 pt-1">
-                            <button class="m36b-season-btn m36b-pill-btn" data-doy="355">Summer</button>
-                            <button class="m36b-season-btn m36b-pill-btn" data-doy="80">Equinox</button>
-                            <button class="m36b-season-btn m36b-pill-btn" data-doy="172">Winter</button>
+                        <div class="grid grid-cols-2 gap-2 text-xs text-slate-300">
+                            <div class="bg-black/30 rounded-xl px-2.5 py-2">
+                                <div class="text-[10px] text-slate-400 uppercase">Upper GF FFL</div>
+                                <div class="font-mono font-bold text-white">RL 98.135 m</div>
+                            </div>
+                            <div class="bg-black/30 rounded-xl px-2.5 py-2">
+                                <div class="text-[10px] text-slate-400 uppercase">GF Ceiling</div>
+                                <div id="m36m-site-ceil-readout" class="font-mono font-bold text-white">2.40 m</div>
+                            </div>
                         </div>
+                        <button id="m36m-site-neighb-btn" class="m36m-btn w-full">🏘️ Toggle Neighbours</button>
                     </div>
 
                     <!-- Plan Revisions 1–4 -->
                     <div class="space-y-1.5">
                         <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">House Design Revision</div>
                         <div class="grid grid-cols-4 gap-1.5">
-                            <button class="m36b-rev-btn m36b-pill-btn" data-rev="1">Rev 1</button>
-                            <button class="m36b-rev-btn m36b-pill-btn" data-rev="2">Rev 2</button>
-                            <button class="m36b-rev-btn m36b-pill-btn" data-rev="3">Rev 3</button>
-                            <button class="m36b-rev-btn m36b-pill-btn" data-rev="4">Rev 4</button>
+                            <button class="m36m-rev-btn m36m-btn" data-rev="1">Rev 1</button>
+                            <button class="m36m-rev-btn m36m-btn" data-rev="2">Rev 2</button>
+                            <button class="m36m-rev-btn m36m-btn" data-rev="3">Rev 3</button>
+                            <button class="m36m-rev-btn m36m-btn" data-rev="4">Rev 4</button>
                         </div>
                     </div>
 
-                    <!-- Ceiling Height -->
+                    <!-- Ground Floor Ceiling Height -->
                     <div class="space-y-1.5">
-                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Ground Floor Ceiling Height</div>
+                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Ceiling Height</div>
                         <div class="grid grid-cols-3 gap-1.5">
-                            <button class="m36b-ceil-btn m36b-pill-btn" data-h="2.40">2.40 m</button>
-                            <button class="m36b-ceil-btn m36b-pill-btn" data-h="2.55">2.55 m</button>
-                            <button class="m36b-ceil-btn m36b-pill-btn" data-h="2.80">2.80 m</button>
+                            <button class="m36m-ceil-btn m36m-btn" data-h="2.40">2.40 m</button>
+                            <button class="m36m-ceil-btn m36m-btn" data-h="2.55">2.55 m</button>
+                            <button class="m36m-ceil-btn m36m-btn" data-h="2.80">2.80 m</button>
                         </div>
                     </div>
 
-                    <!-- Thermal / Frame Rate Profile -->
-                    <div class="space-y-1.5">
-                        <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Battery & Thermal Profile</div>
-                        <div class="grid grid-cols-3 gap-1.5">
-                            <button class="m36b-eco-btn m36b-pill-btn" data-preset="eco">Eco 30</button>
-                            <button class="m36b-eco-btn m36b-pill-btn" data-preset="balanced">Balanced</button>
-                            <button class="m36b-eco-btn m36b-pill-btn" data-preset="quality">Max Qual</button>
+                    <!-- Sun Time & Season Controls -->
+                    <div class="space-y-2.5 bg-white/5 rounded-2xl p-3.5 border border-white/10">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="font-bold text-amber-300 uppercase">Sun Time of Day</span>
+                            <span id="m36m-sun-val" class="font-mono text-sm font-extrabold text-white">10:30 AM</span>
+                        </div>
+                        <input id="m36m-sun-slider" type="range" min="5.5" max="20.5" step="0.1" value="10.5" class="w-full accent-amber-400 h-2.5 bg-slate-700 rounded-lg cursor-pointer">
+                        <div class="grid grid-cols-3 gap-1.5 pt-0.5">
+                            <button class="m36m-season-btn m36m-btn" data-doy="355">Summer</button>
+                            <button class="m36m-season-btn m36m-btn" data-doy="80">Equinox</button>
+                            <button class="m36m-season-btn m36m-btn" data-doy="172">Winter</button>
+                        </div>
+                    </div>
+
+                    <!-- Save / Load Spec JSON -->
+                    <div class="space-y-2 bg-white/5 rounded-2xl p-3.5 border border-emerald-400/25">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[11px] font-bold uppercase tracking-wider text-emerald-300">Spec Snapshot (JSON)</span>
+                            <span id="m36m-json-status" class="text-[11px] font-mono text-slate-400">Ready</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="m36m-save-json-btn" class="m36m-btn m36m-emerald">💾 Save JSON</button>
+                            <label class="m36m-btn cursor-pointer">
+                                <span>📂 Load JSON</span>
+                                <input id="m36m-load-json-input" type="file" accept=".json,application/json" class="hidden">
+                            </label>
                         </div>
                     </div>
                 </div>
             `;
-            document.body.appendChild(sunSheet);
+            document.body.appendChild(siteSheet);
 
             // =========================================================================
-            // 36B-6. MOBILE "SOLAR & BUILDER'S PRICE LIST" CARD SHEET
+            // 7. MOBILE "PRICE LIST & SOLAR" CARD SHEET
             // =========================================================================
-            const solarSpecSheet = document.createElement('div');
-            solarSpecSheet.id = 'm36b-sheet-solar';
-            solarSpecSheet.className = 'm36b-sheet';
-            solarSpecSheet.innerHTML = `
-                <div class="m36b-sheet-hdr">
+            const moreSheet = document.createElement('div');
+            moreSheet.id = 'm36m-sheet-more';
+            moreSheet.className = 'm36m-sheet';
+            moreSheet.innerHTML = `
+                <div class="m36m-sheet-hdr">
                     <div class="flex bg-black/50 p-1 rounded-xl gap-1">
-                        <button id="m36b-sub-solar" class="px-3 py-1.5 rounded-lg bg-amber-400 text-slate-950 text-xs font-extrabold">☀️ Solar</button>
-                        <button id="m36b-sub-price" class="px-3 py-1.5 rounded-lg text-slate-300 text-xs font-bold">💰 Price List</button>
+                        <button id="m36m-sub-price" class="px-3.5 py-2 rounded-lg bg-emerald-400 text-slate-950 text-xs font-extrabold">💰 Price List</button>
+                        <button id="m36m-sub-solar" class="px-3.5 py-2 rounded-lg text-slate-300 text-xs font-bold">☀️ Solar</button>
                     </div>
-                    <button class="m36b-sheet-close px-3.5 py-1.5 rounded-xl bg-white/10 text-slate-100 text-xs font-bold">Done</button>
+                    <button class="m36m-close px-4 py-2 rounded-xl bg-white/15 text-white text-xs font-extrabold">Done</button>
                 </div>
 
-                <!-- Sub-Tab 1: Mobile Eurobodalla Solar Dashboard -->
-                <div id="m36b-panel-solar" class="p-4 space-y-3.5">
-                    <div class="bg-white/5 rounded-2xl p-3.5 border border-amber-400/30 space-y-3">
-                        <div class="flex items-start justify-between gap-2">
-                            <div>
-                                <div class="text-xs font-bold text-amber-300 uppercase tracking-wide">Lilli Pilli Solar Yield</div>
-                                <div id="m36b-sol-spec" class="text-xs font-mono text-slate-300 mt-0.5">—</div>
+                <div class="m36m-sheet-body">
+                    <!-- Sub-Tab A: Mobile Builder's Price List Card Stack -->
+                    <div id="m36m-panel-price" class="space-y-3">
+                        <div class="bg-white/5 rounded-2xl p-3.5 border border-emerald-400/30 space-y-2.5">
+                            <div class="flex items-center justify-between gap-2">
+                                <div>
+                                    <div class="text-[11px] font-bold uppercase tracking-wider text-emerald-300">Builder's Spec & Upgrades</div>
+                                    <div id="m36m-price-summary" class="text-sm font-extrabold text-white mt-0.5">Loading…</div>
+                                </div>
+                                <button id="m36m-open-quote-modal" class="px-3 py-2 rounded-xl bg-sky-500/25 border border-sky-400/40 text-sky-200 text-xs font-extrabold shrink-0">Full Quote</button>
                             </div>
-                            <div class="flex bg-black/45 p-0.5 rounded-xl gap-0.5">
-                                <button class="m36b-sol-wbtn px-2.5 py-1.5 rounded-lg text-xs font-bold bg-sky-400 text-slate-950" data-wmode="typical">Typical</button>
-                                <button class="m36b-sol-wbtn px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-300" data-wmode="clear">Clear</button>
+
+                            <div class="grid grid-cols-3 gap-1.5">
+                                <button class="m36m-flt-btn m36m-btn m36m-on" data-flt="all">All</button>
+                                <button class="m36m-flt-btn m36m-btn" data-flt="upg">Upgrades</button>
+                                <button class="m36m-flt-btn m36m-btn" data-flt="std">Standard</button>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-1.5">
+                                <button id="m36m-blink-std" class="m36m-btn">100% Standard</button>
+                                <button id="m36m-blink-spec" class="m36m-btn m36m-amber">My Custom Spec</button>
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-2 gap-2.5">
-                            <div class="bg-black/35 rounded-xl p-3 border border-white/10">
-                                <div class="text-[11px] text-slate-400">Live Generation</div>
-                                <div id="m36b-sol-live" class="text-lg font-mono font-extrabold text-amber-300 mt-0.5">0.00 kW</div>
-                            </div>
-                            <div class="bg-black/35 rounded-xl p-3 border border-white/10">
-                                <div class="text-[11px] text-slate-400">Selected Day</div>
-                                <div id="m36b-sol-day" class="text-lg font-mono font-extrabold text-emerald-300 mt-0.5">0.0 kWh</div>
-                            </div>
-                            <div class="bg-black/35 rounded-xl p-3 border border-white/10">
-                                <div class="text-[11px] text-slate-400">Annual Output</div>
-                                <div id="m36b-sol-yr" class="text-lg font-mono font-extrabold text-sky-300 mt-0.5">0 kWh</div>
-                            </div>
-                            <div class="bg-black/35 rounded-xl p-3 border border-white/10">
-                                <div class="text-[11px] text-slate-400">Est. Annual Value</div>
-                                <div id="m36b-sol-val" class="text-lg font-mono font-extrabold text-emerald-300 mt-0.5">$0/yr</div>
-                            </div>
-                        </div>
-
-                        <div class="grid grid-cols-3 gap-2 text-center text-xs bg-black/25 rounded-xl p-2.5">
-                            <div>
-                                <div class="text-[10px] text-slate-400">Avg Day</div>
-                                <div id="m36b-sol-avg" class="font-mono font-bold text-white mt-0.5">0.0 kWh</div>
-                            </div>
-                            <div>
-                                <div class="text-[10px] text-slate-400">Summer</div>
-                                <div id="m36b-sol-sum" class="font-mono font-bold text-amber-200 mt-0.5">0.0 kWh</div>
-                            </div>
-                            <div>
-                                <div class="text-[10px] text-slate-400">Winter</div>
-                                <div id="m36b-sol-win" class="font-mono font-bold text-sky-200 mt-0.5">0.0 kWh</div>
-                            </div>
-                        </div>
+                        <div id="m36m-price-cards" class="space-y-2.5 pb-2"></div>
                     </div>
 
-                    <div class="grid grid-cols-2 gap-2.5">
-                        <button id="m36b-open-solar-tab" class="m36b-pill-btn m36b-amber">⚙️ Edit Panels</button>
-                        <button id="m36b-open-solar-modal" class="m36b-pill-btn">📊 Full Calculator</button>
-                    </div>
-                </div>
-
-                <!-- Sub-Tab 2: Mobile Builder's Price List & Spec Cards -->
-                <div id="m36b-panel-price" class="hidden p-4 space-y-3">
-                    <!-- Summary Banner + Filter Pills -->
-                    <div class="bg-white/5 rounded-2xl p-3.5 border border-emerald-400/30 space-y-2.5">
-                        <div class="flex items-center justify-between gap-2">
-                            <div>
-                                <div class="text-[11px] font-bold uppercase tracking-wider text-emerald-300">Builder's Spec & Upgrades</div>
-                                <div id="m36b-price-summary" class="text-sm font-bold text-white mt-0.5">Loading schedule…</div>
-                            </div>
-                            <button id="m36b-open-quote-modal" class="px-3 py-2 rounded-xl bg-sky-500/25 border border-sky-400/40 text-sky-200 text-xs font-bold shrink-0">Full Quote</button>
+                    <!-- Sub-Tab B: Clean Mobile Solar Launcher & Live Spec Summary -->
+                    <div id="m36m-panel-solar" class="hidden space-y-3.5">
+                        <div class="bg-white/5 rounded-2xl p-4 border border-amber-400/30 space-y-2.5">
+                            <div class="text-xs font-extrabold text-amber-300 uppercase tracking-wide">Active Solar Configuration</div>
+                            <div id="m36m-solar-spec-txt" class="text-sm font-bold text-white leading-snug">—</div>
+                            <div id="m36m-solar-note-txt" class="text-xs text-slate-300 leading-relaxed">Adjust roof panels, battery size, or open the full interactive solar calculator below.</div>
                         </div>
 
-                        <div class="grid grid-cols-3 gap-1.5">
-                            <button class="m36b-flt-btn m36b-pill-btn m36b-on" data-flt="all">All</button>
-                            <button class="m36b-flt-btn m36b-pill-btn" data-flt="upg">Upgrades</button>
-                            <button class="m36b-flt-btn m36b-pill-btn" data-flt="std">Standard</button>
-                        </div>
-
-                        <div class="grid grid-cols-2 gap-1.5 pt-0.5">
-                            <button id="m36b-blink-std" class="m36b-pill-btn">100% Standard</button>
-                            <button id="m36b-blink-spec" class="m36b-pill-btn m36b-amber">My Custom Spec</button>
+                        <div class="grid grid-cols-1 gap-2.5">
+                            <button id="m36m-open-solar-calc" class="m36m-btn m36m-amber">📊 Open Solar & Energy Calculator</button>
+                            <button id="m36m-edit-solar-panels" class="m36m-btn">⚙️ Edit Roof Panels in Design Menu</button>
                         </div>
                     </div>
-
-                    <!-- Scrollable Mobile Card Stack -->
-                    <div id="m36b-price-cards-list" class="space-y-2.5 pb-4"></div>
                 </div>
             `;
-            document.body.appendChild(solarSpecSheet);
+            document.body.appendChild(moreSheet);
 
             // =========================================================================
-            // 36B-7. DATA SYNC FOR SOLAR DASHBOARD & BUILDER PRICE CARDS
+            // 8. DATA RENDERERS (MOBILE PRICE CARDS, SOLAR SUMMARY & JSON IO)
             // =========================================================================
-            function refreshMobileSolarPanel() {
-                const readTxt = (id, fallback = '—') => document.getElementById(id)?.textContent || fallback;
-                document.getElementById('m36b-sol-spec').textContent = readTxt('m36a-tab-spec-sub');
-                document.getElementById('m36b-sol-live').textContent = readTxt('m36a-tab-live-kw', '0.00 kW');
-                document.getElementById('m36b-sol-day').textContent  = readTxt('m36a-tab-day-kwh', '0.0 kWh');
-                document.getElementById('m36b-sol-yr').textContent   = readTxt('m36a-tab-yr-kwh', '0 kWh');
-                document.getElementById('m36b-sol-val').textContent  = readTxt('m36a-tab-est-val', '$0/yr');
-                document.getElementById('m36b-sol-avg').textContent  = readTxt('m36a-tab-avg-day', '0.0 kWh');
-                document.getElementById('m36b-sol-sum').textContent  = readTxt('m36a-tab-sum-day', '0.0 kWh');
-                document.getElementById('m36b-sol-win').textContent  = readTxt('m36a-tab-win-day', '0.0 kWh');
-
-                const clearActive = Boolean(document.querySelector('#m36a-solar-cal-card .m36a-wmode-btn[data-wmode="clear"]')?.classList.contains('active-sky'));
-                document.querySelectorAll('.m36b-sol-wbtn').forEach(b => {
-                    const on = (b.dataset.wmode === 'clear') === clearActive;
-                    b.className = on
-                        ? 'm36b-sol-wbtn px-2.5 py-1.5 rounded-lg text-xs font-bold bg-sky-400 text-slate-950'
-                        : 'm36b-sol-wbtn px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-300';
-                });
-            }
-
-            function findNativeSpecModalButton() {
+            function findNativeQuoteModalBtn() {
                 const btns = Array.from(document.querySelectorAll('button'));
                 return btns.find(b => {
-                    if (b.closest('#m36b-sheet-solar, #m36b-bottom-nav, #m36b-sheet-views, #m36b-sheet-sun')) return false;
+                    if (b.closest('.m36m-sheet, #m36m-bottom-nav, #m36m-top-pill')) return false;
                     const id = (b.id || '').toLowerCase();
                     const txt = (b.textContent || '').toLowerCase();
                     return /spec|quote|price|schedule|budget|bom/.test(id) || /price list|spec sheet|builder.*quote|selections.*cost/.test(txt);
                 }) || null;
             }
 
-            function renderMobilePriceListCards() {
-                const listEl = document.getElementById('m36b-price-cards-list');
-                const sumEl = document.getElementById('m36b-price-summary');
-                if (!listEl) return;
+            function renderMobilePriceCards() {
+                const wrap = document.getElementById('m36m-price-cards');
+                const sumEl = document.getElementById('m36m-price-summary');
+                if (!wrap) return;
 
                 let catalog = [];
                 try {
@@ -18589,334 +18594,384 @@
                 const upgCount = catalog.filter(r => r.status === 'UPG').length;
                 const stdCount = catalog.length - upgCount;
 
-                // Try reading any live upgrade total displayed in the base app's budget badge
-                let liveCostTxt = '';
+                let liveTotalTxt = '';
                 document.querySelectorAll('[id*="budget" i], [id*="cost" i], [id*="upgrade" i]').forEach(el => {
-                    if (liveCostTxt || el.closest('#m36b-sheet-solar')) return;
+                    if (liveTotalTxt || el.closest('.m36m-sheet')) return;
                     const m = (el.textContent || '').match(/\+?\$\s?[\d,]+/);
-                    if (m) liveCostTxt = m[0];
+                    if (m) liveTotalTxt = m[0];
                 });
 
                 if (sumEl) {
-                    sumEl.textContent = `${catalog.length} Items • ${upgCount} UPG / ${stdCount} STD${liveCostTxt ? ' • ' + liveCostTxt : ''}`;
+                    sumEl.textContent = `${catalog.length} Items • ${upgCount} UPG / ${stdCount} STD${liveTotalTxt ? ' • ' + liveTotalTxt : ''}`;
                 }
 
-                const filtered = catalog.filter(r => {
-                    if (MobUi.specFilter === 'upg') return r.status === 'UPG';
-                    if (MobUi.specFilter === 'std') return r.status !== 'UPG';
+                const rows = catalog.filter(r => {
+                    if (Mob.specFilter === 'upg') return r.status === 'UPG';
+                    if (Mob.specFilter === 'std') return r.status !== 'UPG';
                     return true;
                 });
 
-                if (filtered.length === 0) {
-                    listEl.innerHTML = `<div class="text-center text-sm text-slate-400 py-6 bg-white/5 rounded-2xl">No items match this filter.</div>`;
-                    return;
+                if (rows.length === 0) {
+                    wrap.innerHTML = `<div class="text-center text-sm text-slate-400 py-6 bg-white/5 rounded-2xl">No items match this filter.</div>`;
+                } else {
+                    const grouped = new Map();
+                    rows.forEach(r => {
+                        const tr = r.trade || 'Selections';
+                        if (!grouped.has(tr)) grouped.set(tr, []);
+                        grouped.get(tr).push(r);
+                    });
+
+                    let html = '';
+                    grouped.forEach((items, trade) => {
+                        html += `<div class="text-[11px] font-bold uppercase tracking-wider text-sky-300 pt-2 px-1">${trade}</div>`;
+                        items.forEach(r => {
+                            const isUpg = r.status === 'UPG';
+                            const badgeCls = isUpg
+                                ? 'bg-amber-400/20 text-amber-200 border border-amber-400/40'
+                                : 'bg-emerald-400/20 text-emerald-200 border border-emerald-400/35';
+                            let priceHtml = '';
+                            if (r.costKey && typeof UPGRADE_COSTS !== 'undefined' && UPGRADE_COSTS && UPGRADE_COSTS[r.costKey] !== undefined) {
+                                const amt = Number(UPGRADE_COSTS[r.costKey]);
+                                if (!Number.isNaN(amt) && amt !== 0) {
+                                    priceHtml = `<span class="font-mono text-xs font-extrabold ${amt > 0 ? 'text-amber-300' : 'text-emerald-300'}">${amt > 0 ? '+' : '-'}$${Math.abs(amt).toLocaleString()}</span>`;
+                                }
+                            }
+                            html += `
+                                <div class="bg-white/5 border border-white/10 rounded-2xl p-3.5 space-y-1.5">
+                                    <div class="flex items-start justify-between gap-2">
+                                        <div class="text-sm font-bold text-white leading-snug">${r.item || 'Selection'}</div>
+                                        <div class="flex items-center gap-1.5 shrink-0">
+                                            ${priceHtml}
+                                            <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold ${badgeCls}">${isUpg ? 'UPG' : 'STD'}</span>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs font-semibold text-sky-200 leading-relaxed">${r.selection || '—'}</div>
+                                    ${r.notes ? `<div class="text-[11.5px] text-slate-400 leading-relaxed border-t border-white/10 pt-1.5">${r.notes}</div>` : ''}
+                                </div>
+                            `;
+                        });
+                    });
+                    wrap.innerHTML = html;
                 }
 
-                // Group neatly by trade category
-                const grouped = new Map();
-                filtered.forEach(row => {
-                    const tr = row.trade || 'General Selections';
-                    if (!grouped.has(tr)) grouped.set(tr, []);
-                    grouped.get(tr).push(row);
+                document.querySelectorAll('.m36m-flt-btn').forEach(b => {
+                    b.classList.toggle('m36m-on', b.dataset.flt === Mob.specFilter);
                 });
+                const isStd = (typeof blinkMode !== 'undefined' && blinkMode === 'std');
+                document.getElementById('m36m-blink-std')?.classList.toggle('m36m-on', isStd);
+                document.getElementById('m36m-blink-spec')?.classList.toggle('m36m-on', !isStd);
+            }
 
-                let html = '';
-                grouped.forEach((rows, tradeName) => {
-                    html += `<div class="text-[11px] font-bold uppercase tracking-wider text-sky-300 pt-2 px-1">${tradeName}</div>`;
-                    rows.forEach(r => {
-                        const isUpg = r.status === 'UPG';
-                        const badgeCls = isUpg
-                            ? 'bg-amber-400/20 text-amber-200 border border-amber-400/40'
-                            : 'bg-emerald-400/20 text-emerald-200 border border-emerald-400/35';
-                        // Check if global quote/cost table exposes a dollar figure for costKey
-                        let priceTag = '';
-                        if (r.costKey && typeof UPGRADE_COSTS !== 'undefined' && UPGRADE_COSTS && UPGRADE_COSTS[r.costKey] !== undefined) {
-                            const amt = Number(UPGRADE_COSTS[r.costKey]);
-                            if (!Number.isNaN(amt) && amt !== 0) {
-                                priceTag = `<span class="font-mono text-xs font-extrabold ${amt > 0 ? 'text-amber-300' : 'text-emerald-300'}">${amt > 0 ? '+' : '-'}$${Math.abs(amt).toLocaleString()}</span>`;
+            function renderMobileSolarSummary() {
+                const specEl = document.getElementById('m36m-solar-spec-txt');
+                const noteEl = document.getElementById('m36m-solar-note-txt');
+                if (!specEl || !noteEl) return;
+
+                let row = null;
+                try {
+                    if (typeof getSelectionsCatalog === 'function') {
+                        row = getSelectionsCatalog().find(r => /solar|pv|battery/i.test(r.item || ''));
+                    }
+                } catch {}
+
+                if (row) {
+                    specEl.textContent = row.selection || 'Configured Solar Array';
+                    noteEl.textContent = row.notes || 'Open the calculator below to inspect hourly curves, battery storage, and seasonal generation.';
+                } else {
+                    specEl.textContent = 'Solar & Battery Configurator Ready';
+                    noteEl.textContent = 'Tap below to adjust roof panels or open the full Solar & Energy calculator.';
+                }
+            }
+
+            function setJsonStatus(msg, isErr = false) {
+                const el = document.getElementById('m36m-json-status');
+                if (!el) return;
+                el.textContent = msg;
+                el.className = isErr ? 'text-[11px] font-mono text-rose-300' : 'text-[11px] font-mono text-emerald-300';
+            }
+
+            function saveSpecJsonMobile() {
+                try {
+                    if (typeof captureSpecSnapshot !== 'function') {
+                        setJsonStatus('Snapshot API unavailable', true);
+                        return;
+                    }
+                    const snap = captureSpecSnapshot();
+                    const rev = typeof currentRevision !== 'undefined' ? currentRevision : 4;
+                    const stamp = new Date().toISOString().slice(0, 10);
+                    const fileName = `lilli-pilli-rev${rev}-spec-${stamp}.json`;
+                    const blob = new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1500);
+                    setJsonStatus('Saved JSON');
+                } catch (err) {
+                    console.error('Mobile Save JSON failed:', err);
+                    setJsonStatus('Save failed', true);
+                }
+            }
+
+            function loadSpecJsonMobile(file) {
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const parsed = JSON.parse(String(ev.target?.result || '{}'));
+                        if (typeof applySpecSnapshot === 'function') {
+                            applySpecSnapshot(parsed, false);
+                            syncMobileStateUI();
+                            if (Mob.sheet === 'more') {
+                                renderMobilePriceCards();
+                                renderMobileSolarSummary();
                             }
+                            setJsonStatus(`Loaded: ${file.name.slice(0, 18)}`);
+                        } else {
+                            setJsonStatus('Apply API unavailable', true);
                         }
-                        html += `
-                            <div class="bg-white/5 border border-white/10 rounded-2xl p-3.5 space-y-1.5">
-                                <div class="flex items-start justify-between gap-2">
-                                    <div class="text-sm font-bold text-white leading-snug">${r.item || 'Selection'}</div>
-                                    <div class="flex items-center gap-1.5 shrink-0">
-                                        ${priceTag}
-                                        <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold ${badgeCls}">${isUpg ? 'UPG' : 'STD'}</span>
-                                    </div>
-                                </div>
-                                <div class="text-xs font-semibold text-sky-200 leading-relaxed">${r.selection || '—'}</div>
-                                ${r.notes ? `<div class="text-[11.5px] text-slate-400 leading-relaxed border-t border-white/10 pt-1.5">${r.notes}</div>` : ''}
-                            </div>
-                        `;
-                    });
-                });
-                listEl.innerHTML = html;
-
-                // Sync filter & blink pill states
-                document.querySelectorAll('.m36b-flt-btn').forEach(b => {
-                    b.classList.toggle('m36b-on', b.dataset.flt === MobUi.specFilter);
-                });
-                const isStdBlink = (typeof blinkMode !== 'undefined' && blinkMode === 'std');
-                document.getElementById('m36b-blink-std')?.classList.toggle('m36b-on', isStdBlink);
-                document.getElementById('m36b-blink-spec')?.classList.toggle('m36b-on', !isStdBlink);
+                    } catch (err) {
+                        console.error('Mobile Load JSON failed:', err);
+                        setJsonStatus('Invalid JSON file', true);
+                    }
+                };
+                reader.readAsText(file);
             }
 
             // =========================================================================
-            // 36B-8. SHEET CONTROLLER, LARGE MAP COORDINATION & STATE SYNC
+            // 9. SHEET ROUTER (MINI-MAP STAYS OPEN UNTIL USER TAPS DONE!)
             // =========================================================================
-            function setActiveSheet(name) {
-                const next = (MobUi.activeSheet === name) ? null : name;
-                MobUi.activeSheet = next;
+            function openSheet(name) {
+                const next = (Mob.sheet === name) ? null : name;
+                Mob.sheet = next;
 
-                ensureDesignSheetHeader();
+                if (Mob.active) {
+                    mountDesignPortal(true);
+                    mountMapPortal(true);
+                }
 
-                document.body.classList.toggle('m36b-has-sheet', next !== null);
-                document.body.classList.toggle('m36b-sheet-design', next === 'design');
-                document.body.classList.toggle('m36b-sheet-map', next === 'map');
+                document.body.classList.toggle('m36m-has-sheet', next !== null);
+                document.body.classList.toggle('m36m-map-open', next === 'map');
 
-                viewsSheet.classList.toggle('m36b-open', next === 'views');
-                solarSpecSheet.classList.toggle('m36b-open', next === 'solar');
-                sunSheet.classList.toggle('m36b-open', next === 'sun');
+                // Keep scrim lighter during Map mode so you can watch the 3D view jump above the floor plan!
+                scrim.style.background = (next === 'map') ? 'rgba(2, 6, 23, 0.16)' : 'rgba(2, 6, 23, 0.48)';
 
-                // Highlight active bottom nav button
-                bottomNav.querySelectorAll('.m36b-nav-btn').forEach(btn => {
-                    btn.classList.toggle('m36b-active', btn.dataset.sheet === next);
+                designSheet.classList.toggle('m36m-open', next === 'design');
+                viewsSheet.classList.toggle('m36m-open', next === 'views');
+                mapSheet.classList.toggle('m36m-open', next === 'map');
+                moreSheet.classList.toggle('m36m-open', next === 'more');
+                siteSheet.classList.toggle('m36m-open', next === 'site');
+
+                bottomNav.querySelectorAll('.m36m-nav-btn').forEach(b => {
+                    b.classList.toggle('m36m-active', b.dataset.sheet === next);
                 });
 
-                // When opening the Mobile Map sheet, ensure Module 32's mini-map is unhidden & crisp hi-res!
                 if (next === 'map') {
-                    const mmWidget = document.getElementById('pro-minimap-widget');
-                    if (mmWidget && mmWidget.classList.contains('hidden')) {
+                    const mm = document.getElementById('pro-minimap-widget');
+                    if (mm && mm.classList.contains('hidden')) {
                         document.getElementById('nav-minimap-btn')?.click();
                     }
-                    // Switch mini-map internal canvas buffer to expanded (340px × DPR) for crisp phone clarity
-                    if (mmWidget && mmWidget.style.width === '248px') {
+                    // Upgrade canvas internal pixel resolution once for razor-sharp phone floor plan
+                    if (mm && mm.style.width === '248px') {
                         document.getElementById('mm-size-btn')?.click();
                     }
+                    const hint = document.getElementById('mm-hint-bar');
+                    if (hint) hint.textContent = 'Tap or drag on plan to move & aim • Stays open until Done';
                     if (typeof window.__ecoMarkShadowsDirty === 'function') window.__ecoMarkShadowsDirty();
-                } else if (next === 'solar') {
-                    refreshMobileSolarPanel();
-                    renderMobilePriceListCards();
-                } else if (next === 'views' || next === 'sun') {
-                    syncMobileControlsState();
+                } else if (next === 'more') {
+                    renderMobilePriceCards();
+                    renderMobileSolarSummary();
+                } else if (next === 'views' || next === 'site') {
+                    syncMobileStateUI();
                 }
             }
 
-            function syncMobileControlsState() {
-                // 1. Top Status Chip (Rev + Live Sun Time + Eco Dot)
+            function syncMobileStateUI() {
                 const rev = typeof currentRevision !== 'undefined' ? currentRevision : 4;
-                const revEl = document.getElementById('m36b-top-rev');
-                if (revEl) revEl.textContent = `Rev ${rev}`;
-
                 const hr = parseFloat(typeof timeSlider !== 'undefined' ? timeSlider?.value : 10.5) || 10.5;
                 const timeTxt = typeof formatTime === 'function' ? formatTime(hr) : `${hr.toFixed(1)}h`;
-                const topTimeEl = document.getElementById('m36b-top-time');
-                if (topTimeEl) topTimeEl.textContent = timeTxt;
 
-                const sunValEl = document.getElementById('m36b-sun-time-val');
-                const sunSlEl = document.getElementById('m36b-sun-time-sl');
-                if (sunValEl) sunValEl.textContent = timeTxt;
-                if (sunSlEl) sunSlEl.value = hr;
+                const topRev = document.getElementById('m36m-top-rev');
+                const topTime = document.getElementById('m36m-top-time');
+                if (topRev) topRev.textContent = `Rev ${rev}`;
+                if (topTime) topTime.textContent = timeTxt;
 
-                // 2. Top-Right Quick Exit 360° / Walk Pill
+                const siteRev = document.getElementById('m36m-site-rev-badge');
+                if (siteRev) siteRev.textContent = `Rev ${rev}`;
+
+                const sunVal = document.getElementById('m36m-sun-val');
+                const sunSl = document.getElementById('m36m-sun-slider');
+                if (sunVal) sunVal.textContent = timeTxt;
+                if (sunSl) sunSl.value = hr;
+
+                // Top-Right Quick Exit 360° / Walk pill
                 const tripodOn = Boolean(document.getElementById('nav-tripod-btn')?.classList.contains('bg-sky-400'));
                 const walkOn = Boolean(typeof fpsActive !== 'undefined' && fpsActive);
-                modePill.classList.toggle('m36b-show', tripodOn || walkOn);
-                modePill.textContent = walkOn ? '✕ Exit Walk' : '✕ Exit 360°';
+                exitWalkPill.classList.toggle('m36m-show', tripodOn || walkOn);
+                exitWalkPill.textContent = walkOn ? '✕ Exit Walk' : '✕ Exit 360°';
 
-                // 3. Views Sheet Active Highlights
-                document.getElementById('m36b-v-orbit')?.classList.toggle('m36b-on', !tripodOn && !walkOn);
-                document.getElementById('m36b-v-tripod')?.classList.toggle('m36b-on', tripodOn);
+                // Views Sheet Active Highlights
+                document.getElementById('m36m-v-orbit')?.classList.toggle('m36m-on', !tripodOn && !walkOn);
+                document.getElementById('m36m-v-tripod')?.classList.toggle('m36m-on', tripodOn);
 
-                const activeLens = document.querySelector('.nav-lens-btn.active-sky')?.dataset?.lens || '50mm';
-                document.querySelectorAll('.m36b-lens-btn').forEach(b => {
-                    b.classList.toggle('m36b-on', b.dataset.lens === activeLens);
+                const curLens = document.querySelector('.nav-lens-btn.active-sky')?.dataset?.lens || '50mm';
+                document.querySelectorAll('.m36m-lens-btn').forEach(b => {
+                    b.classList.toggle('m36m-on', b.dataset.lens === curLens);
                 });
 
                 const vLockOn = Boolean(document.getElementById('nav-vlock-btn')?.classList.contains('bg-cyan-400'));
-                document.getElementById('m36b-v-vlock')?.classList.toggle('m36b-on', vLockOn);
+                document.getElementById('m36m-v-vlock')?.classList.toggle('m36m-on', vLockOn);
 
                 const ghostOn = Boolean(document.getElementById('nav-ghost-btn')?.textContent?.includes('Ghost'));
-                const wBtn = document.getElementById('m36b-v-walls');
+                const wBtn = document.getElementById('m36m-v-walls');
                 if (wBtn) {
                     wBtn.textContent = ghostOn ? '👻 Ghost: Pass' : '🧱 Walls: Solid';
-                    wBtn.className = ghostOn ? 'm36b-pill-btn m36b-on' : 'm36b-pill-btn m36b-emerald';
+                    wBtn.className = ghostOn ? 'm36m-btn m36m-on' : 'm36m-btn m36m-emerald';
                 }
 
                 const garOpen = Boolean(typeof OPENING_STATE !== 'undefined' && OPENING_STATE.D02 && OPENING_STATE.D02.openPct >= 50);
-                const gBtn = document.getElementById('m36b-v-garage');
+                const gBtn = document.getElementById('m36m-v-garage');
                 if (gBtn) {
                     gBtn.textContent = garOpen ? '🚗 Garage: Open' : '🚗 Garage: Closed';
-                    gBtn.className = garOpen ? 'm36b-pill-btn m36b-on' : 'm36b-pill-btn m36b-amber';
+                    gBtn.className = garOpen ? 'm36m-btn m36m-on' : 'm36m-btn m36m-amber';
                 }
 
                 const lblTxt = document.getElementById('nav-labels-btn')?.textContent || 'Labels: Off';
-                const tBtn = document.getElementById('m36b-v-tags');
+                const tBtn = document.getElementById('m36m-v-tags');
                 if (tBtn) {
-                    const shortLbl = lblTxt.replace('Labels:', 'Tags:');
-                    tBtn.textContent = `🏷️ ${shortLbl}`;
-                    tBtn.className = lblTxt.includes('Off') ? 'm36b-pill-btn' : 'm36b-pill-btn m36b-emerald';
+                    tBtn.textContent = `🏷️ ${lblTxt.replace('Labels:', 'Tags:')}`;
+                    tBtn.className = lblTxt.includes('Off') ? 'm36m-btn' : 'm36m-btn m36m-emerald';
                 }
 
-                // 4. Sun Sheet Active Highlights (Rev, Ceiling, Eco)
-                document.querySelectorAll('.m36b-rev-btn').forEach(b => {
-                    b.classList.toggle('m36b-on', parseInt(b.dataset.rev, 10) === rev);
+                // Site & Revision Sheet Active Highlights
+                document.querySelectorAll('.m36m-rev-btn').forEach(b => {
+                    b.classList.toggle('m36m-on', parseInt(b.dataset.rev, 10) === rev);
                 });
                 const curCeil = document.querySelector('.int-ceil-h-btn.active-std, .int-ceil-h-btn.active-upg')?.dataset?.h || '2.40';
-                document.querySelectorAll('.m36b-ceil-btn').forEach(b => {
-                    b.classList.toggle('m36b-on', b.dataset.h === curCeil);
+                document.querySelectorAll('.m36m-ceil-btn').forEach(b => {
+                    b.classList.toggle('m36m-on', b.dataset.h === curCeil);
                 });
-                const curEco = document.querySelector('.eco-preset-btn.active-std, .eco-preset-btn.active-sky')?.dataset?.preset || 'eco';
-                document.querySelectorAll('.m36b-eco-btn').forEach(b => {
-                    b.classList.toggle('m36b-on', b.dataset.preset === curEco);
-                });
+                const ceilRd = document.getElementById('m36m-site-ceil-readout');
+                if (ceilRd) ceilRd.textContent = `${curCeil} m`;
             }
 
-            function syncMobileViewportMode() {
-                const nowMobile = detectMobileViewport();
-                const overlayOpen = isFullscreenOverlayOpen();
-                MobUi.isMobile = nowMobile;
+            function syncViewport() {
+                const mob = isMobileScreen();
+                const ovOpen = isCinemaOrMultiOpen();
+                Mob.active = mob;
 
-                document.body.classList.toggle('m36b-mobile', nowMobile);
-                document.body.classList.toggle('m36b-overlay-active', overlayOpen);
+                document.body.classList.toggle('m36m-mobile', mob);
+                document.body.classList.toggle('m36m-overlay-open', ovOpen);
 
-                if (!nowMobile && MobUi.activeSheet !== null) {
-                    setActiveSheet(null);
+                // Mount or cleanly restore portals between Mobile Sheets and Desktop HUD
+                mountDesignPortal(mob);
+                mountMapPortal(mob);
+
+                if (mob) {
+                    // Clear Module 34 desktop compact/minimized classes so portaled Design panel is 100% interactive
+                    document.body.classList.remove('m34-hud-minimized', 'm34-drawer-open');
                 }
-                if (overlayOpen && MobUi.activeSheet !== null) {
-                    setActiveSheet(null);
+
+                if ((!mob || ovOpen) && Mob.sheet !== null) {
+                    openSheet(null);
                 }
-                ensureDesignSheetHeader();
-                syncMobileControlsState();
+                syncMobileStateUI();
             }
 
             // =========================================================================
-            // 36B-9. ALL MOBILE INTERACTION HANDLERS
+            // 10. ALL MOBILE EVENT HANDLERS
             // =========================================================================
-            // Bottom Nav Tabs
-            bottomNav.querySelectorAll('.m36b-nav-btn').forEach(btn => {
-                btn.addEventListener('click', () => setActiveSheet(btn.dataset.sheet));
+            bottomNav.querySelectorAll('.m36m-nav-btn').forEach(b => {
+                b.addEventListener('click', () => openSheet(b.dataset.sheet));
+            });
+            topPill.addEventListener('click', () => openSheet('site'));
+            scrim.addEventListener('click', () => openSheet(null));
+            document.querySelectorAll('.m36m-close').forEach(b => {
+                b.addEventListener('click', () => openSheet(null));
             });
 
-            topChip.addEventListener('click', () => setActiveSheet('sun'));
-            scrimEl.addEventListener('click', () => setActiveSheet(null));
-            document.querySelectorAll('.m36b-sheet-close').forEach(b => {
-                b.addEventListener('click', () => setActiveSheet(null));
-            });
-
-            // Quick Exit 360° / Walk top-right pill
-            modePill.addEventListener('click', () => {
+            exitWalkPill.addEventListener('click', () => {
                 if (typeof fpsActive !== 'undefined' && fpsActive && typeof setWalkMode === 'function') {
                     setWalkMode(false);
                 } else if (document.getElementById('nav-tripod-btn')?.classList.contains('bg-sky-400')) {
                     document.getElementById('nav-tripod-btn').click();
                 }
-                setTimeout(syncMobileControlsState, 25);
+                setTimeout(syncMobileStateUI, 25);
             });
-
-            // Closing the Mini-Map via its own '✕' button also dismisses the Mobile Map sheet cleanly
-            document.getElementById('mm-close-btn')?.addEventListener('click', () => {
-                if (MobUi.isMobile && MobUi.activeSheet === 'map') {
-                    MobUi.activeSheet = null;
-                    document.body.classList.remove('m36b-has-sheet', 'm36b-sheet-map');
-                    bottomNav.querySelectorAll('.m36b-nav-btn').forEach(b => b.classList.remove('m36b-active'));
-                }
-            });
-
-            // Auto-close Mobile Map sheet cleanly right after thumb-tapping/aiming a destination on the plan!
-            const mmCanRef = document.getElementById('pro-minimap-canvas');
-            if (mmCanRef) {
-                const dismissMapAfterJump = () => {
-                    if (MobUi.isMobile && MobUi.activeSheet === 'map') {
-                        setTimeout(() => {
-                            setActiveSheet(null);
-                            syncMobileControlsState();
-                        }, 180);
-                    }
-                };
-                mmCanRef.addEventListener('touchend', dismissMapAfterJump, { passive: true });
-                mmCanRef.addEventListener('mouseup', dismissMapAfterJump, { passive: true });
-            }
 
             // Views Sheet Actions
-            document.getElementById('m36b-v-orbit').addEventListener('click', () => {
+            document.getElementById('m36m-v-orbit').addEventListener('click', () => {
                 if (typeof fpsActive !== 'undefined' && fpsActive && typeof setWalkMode === 'function') setWalkMode(false);
                 if (document.getElementById('nav-tripod-btn')?.classList.contains('bg-sky-400')) {
                     document.getElementById('nav-tripod-btn').click();
                 }
-                setActiveSheet(null);
-                setTimeout(syncMobileControlsState, 25);
+                openSheet(null);
+                setTimeout(syncMobileStateUI, 25);
             });
-
-            document.getElementById('m36b-v-tripod').addEventListener('click', () => {
+            document.getElementById('m36m-v-tripod').addEventListener('click', () => {
                 if (!document.getElementById('nav-tripod-btn')?.classList.contains('bg-sky-400')) {
                     document.getElementById('nav-tripod-btn')?.click();
                 }
-                setActiveSheet(null);
-                setTimeout(syncMobileControlsState, 25);
+                openSheet(null);
+                setTimeout(syncMobileStateUI, 25);
             });
-
-            document.getElementById('m36b-v-cinema').addEventListener('click', () => {
-                setActiveSheet(null);
+            document.getElementById('m36m-v-cinema').addEventListener('click', () => {
+                openSheet(null);
                 document.getElementById('cinema-tour-top-btn')?.click();
-                setTimeout(syncMobileViewportMode, 40);
+                setTimeout(syncViewport, 45);
             });
-
-            document.getElementById('m36b-v-4up').addEventListener('click', () => {
-                setActiveSheet(null);
+            document.getElementById('m36m-v-4up').addEventListener('click', () => {
+                openSheet(null);
                 document.querySelector('.nav-mv-btn[data-grid="4"]')?.click();
-                setTimeout(syncMobileViewportMode, 40);
+                setTimeout(syncViewport, 45);
             });
 
-            document.querySelectorAll('.m36b-lens-btn').forEach(btn => {
+            document.querySelectorAll('.m36m-lens-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     document.querySelector(`.nav-lens-btn[data-lens="${btn.dataset.lens}"]`)?.click();
-                    setTimeout(syncMobileControlsState, 20);
+                    setTimeout(syncMobileStateUI, 20);
                 });
             });
-
-            document.getElementById('m36b-v-vlock').addEventListener('click', () => {
+            document.getElementById('m36m-v-vlock').addEventListener('click', () => {
                 document.getElementById('nav-vlock-btn')?.click();
-                setTimeout(syncMobileControlsState, 20);
+                setTimeout(syncMobileStateUI, 20);
             });
-
-            document.getElementById('m36b-v-walls').addEventListener('click', () => {
+            document.getElementById('m36m-v-walls').addEventListener('click', () => {
                 document.getElementById('nav-ghost-btn')?.click();
-                setTimeout(syncMobileControlsState, 20);
+                setTimeout(syncMobileStateUI, 20);
             });
-
-            document.getElementById('m36b-v-garage').addEventListener('click', () => {
+            document.getElementById('m36m-v-garage').addEventListener('click', () => {
                 document.getElementById('nav-garage-btn')?.click();
-                setTimeout(syncMobileControlsState, 360);
+                setTimeout(syncMobileStateUI, 360);
             });
-
-            document.getElementById('m36b-v-tags').addEventListener('click', () => {
+            document.getElementById('m36m-v-tags').addEventListener('click', () => {
                 document.getElementById('nav-labels-btn')?.click();
-                setTimeout(syncMobileControlsState, 20);
+                setTimeout(syncMobileStateUI, 20);
             });
 
-            document.getElementById('m36b-cut-full').addEventListener('click', () => {
+            document.getElementById('m36m-cut-full').addEventListener('click', () => {
                 const b = document.getElementById('view-full') || document.getElementById('view-ext');
                 if (b) b.click();
-                else { roofGroup.visible = true; groundGroup.visible = true; lowerGroup.visible = true; }
-                setActiveSheet(null);
+                else if (typeof roofGroup !== 'undefined') { roofGroup.visible = true; groundGroup.visible = true; lowerGroup.visible = true; }
+                openSheet(null);
             });
-            document.getElementById('m36b-cut-gf').addEventListener('click', () => {
+            document.getElementById('m36m-cut-gf').addEventListener('click', () => {
                 const b = document.getElementById('view-gf');
                 if (b) b.click();
-                else { roofGroup.visible = false; groundGroup.visible = true; lowerGroup.visible = true; }
-                setActiveSheet(null);
+                else if (typeof roofGroup !== 'undefined') { roofGroup.visible = false; groundGroup.visible = true; lowerGroup.visible = true; }
+                openSheet(null);
             });
-            document.getElementById('m36b-cut-lgf').addEventListener('click', () => {
+            document.getElementById('m36m-cut-lgf').addEventListener('click', () => {
                 const b = document.getElementById('view-lgf');
                 if (b) b.click();
-                else { roofGroup.visible = false; groundGroup.visible = false; lowerGroup.visible = true; }
-                setActiveSheet(null);
+                else if (typeof roofGroup !== 'undefined') { roofGroup.visible = false; groundGroup.visible = false; lowerGroup.visible = true; }
+                openSheet(null);
             });
 
-            // Quick Viewpoint & Room Jumps
-            const MOBILE_JUMPS = {
+            const MOB_JUMPS = {
                 front:   () => ({ p: [-10.5, 10.5, 13.5], t: [14.5, 3.8, -0.2], lens: '50mm' }),
                 rear:    () => ({ p: [36.0, 11.0, -12.0], t: [17.2, 3.1, 0.0],  lens: '50mm' }),
                 top:     () => ({ p: [16.0, 44.0, 0.3],   t: [16.0, 2.0, 0.0],  lens: '50mm' }),
@@ -18929,166 +18984,166 @@
                 bath:    () => ({ p: [16.45, Y_LGF_SSL + 1.54, -1.60], t: [15.10, Y_LGF_SSL + 1.22, -3.70], lens: '12mm' })
             };
 
-            document.querySelectorAll('.m36b-jump-btn').forEach(btn => {
+            document.querySelectorAll('.m36m-jump-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    const fn = MOBILE_JUMPS[btn.dataset.jump];
-                    if (!fn) return;
+                    const fn = MOB_JUMPS[btn.dataset.jump];
+                    if (!fn || typeof flyTo !== 'function') return;
                     const pose = fn();
                     if (pose.lens) document.querySelector(`.nav-lens-btn[data-lens="${pose.lens}"]`)?.click();
                     flyTo(new THREE.Vector3(...pose.p), new THREE.Vector3(...pose.t));
-                    setActiveSheet(null);
+                    openSheet(null);
                 });
             });
 
-            // Sun, Revision & Eco Sheet Actions
-            document.getElementById('m36b-sun-time-sl').addEventListener('input', (e) => {
+            // Site, Revision, Sun & Save/Load JSON Actions
+            document.getElementById('m36m-site-neighb-btn').addEventListener('click', () => {
+                const nbCtrl = document.querySelector('#hud-wrapper [id*="neighb" i], #m36m-design-portal-body [id*="neighb" i]');
+                if (nbCtrl) nbCtrl.click();
+                else if (typeof neighboursGroup !== 'undefined' && neighboursGroup) neighboursGroup.visible = !neighboursGroup.visible;
+            });
+
+            document.querySelectorAll('.m36m-rev-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.getElementById(`rev${btn.dataset.rev}-btn`)?.click();
+                    setTimeout(syncMobileStateUI, 30);
+                });
+            });
+            document.querySelectorAll('.m36m-ceil-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelector(`.int-ceil-h-btn[data-h="${btn.dataset.h}"]`)?.click();
+                    setTimeout(syncMobileStateUI, 30);
+                });
+            });
+            document.getElementById('m36m-sun-slider').addEventListener('input', (e) => {
                 if (typeof timeSlider !== 'undefined' && timeSlider) {
                     timeSlider.value = e.target.value;
                     if (typeof syncSolar === 'function') syncSolar();
                 }
-                syncMobileControlsState();
+                syncMobileStateUI();
             });
-
-            document.querySelectorAll('.m36b-season-btn').forEach(btn => {
+            document.querySelectorAll('.m36m-season-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     if (typeof daySlider !== 'undefined' && daySlider) {
                         daySlider.value = btn.dataset.doy;
                         if (typeof syncSolar === 'function') syncSolar();
                     }
-                    syncMobileControlsState();
+                    syncMobileStateUI();
                 });
             });
 
-            document.querySelectorAll('.m36b-rev-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.getElementById(`rev${btn.dataset.rev}-btn`)?.click();
-                    setTimeout(syncMobileControlsState, 30);
-                });
+            document.getElementById('m36m-save-json-btn').addEventListener('click', saveSpecJsonMobile);
+            document.getElementById('m36m-load-json-input').addEventListener('change', (e) => {
+                const file = e.target.files?.[0];
+                if (file) loadSpecJsonMobile(file);
+                e.target.value = '';
             });
 
-            document.querySelectorAll('.m36b-ceil-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelector(`.int-ceil-h-btn[data-h="${btn.dataset.h}"]`)?.click();
-                    setTimeout(syncMobileControlsState, 30);
-                });
-            });
+            // Price List & Solar Sheet Actions
+            const subPrice = document.getElementById('m36m-sub-price');
+            const subSolar = document.getElementById('m36m-sub-solar');
+            const panelPrice = document.getElementById('m36m-panel-price');
+            const panelSolar = document.getElementById('m36m-panel-solar');
 
-            document.querySelectorAll('.m36b-eco-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelector(`.eco-preset-btn[data-preset="${btn.dataset.preset}"]`)?.click();
-                    setTimeout(syncMobileControlsState, 30);
-                });
-            });
-
-            // Solar & Price List Sub-Tabs + Actions
-            const subSolarBtn = document.getElementById('m36b-sub-solar');
-            const subPriceBtn = document.getElementById('m36b-sub-price');
-            const panelSolar = document.getElementById('m36b-panel-solar');
-            const panelPrice = document.getElementById('m36b-panel-price');
-
-            function switchSolarSpecSubTab(which) {
-                const isSol = (which === 'solar');
-                panelSolar.classList.toggle('hidden', !isSol);
-                panelPrice.classList.toggle('hidden', isSol);
-                subSolarBtn.className = isSol
-                    ? 'px-3 py-1.5 rounded-lg bg-amber-400 text-slate-950 text-xs font-extrabold'
-                    : 'px-3 py-1.5 rounded-lg text-slate-300 text-xs font-bold';
-                subPriceBtn.className = !isSol
-                    ? 'px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 text-xs font-extrabold'
-                    : 'px-3 py-1.5 rounded-lg text-slate-300 text-xs font-bold';
-                if (isSol) refreshMobileSolarPanel();
-                else renderMobilePriceListCards();
+            function switchMoreSubTab(which) {
+                Mob.moreSubTab = which;
+                const isPrice = which === 'price';
+                panelPrice.classList.toggle('hidden', !isPrice);
+                panelSolar.classList.toggle('hidden', isPrice);
+                subPrice.className = isPrice
+                    ? 'px-3.5 py-2 rounded-lg bg-emerald-400 text-slate-950 text-xs font-extrabold'
+                    : 'px-3.5 py-2 rounded-lg text-slate-300 text-xs font-bold';
+                subSolar.className = !isPrice
+                    ? 'px-3.5 py-2 rounded-lg bg-amber-400 text-slate-950 text-xs font-extrabold'
+                    : 'px-3.5 py-2 rounded-lg text-slate-300 text-xs font-bold';
+                if (isPrice) renderMobilePriceCards();
+                else renderMobileSolarSummary();
             }
 
-            subSolarBtn.addEventListener('click', () => switchSolarSpecSubTab('solar'));
-            subPriceBtn.addEventListener('click', () => switchSolarSpecSubTab('price'));
+            subPrice.addEventListener('click', () => switchMoreSubTab('price'));
+            subSolar.addEventListener('click', () => switchMoreSubTab('solar'));
 
-            document.querySelectorAll('.m36b-sol-wbtn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    document.querySelector(`#m36a-solar-cal-card .m36a-wmode-btn[data-wmode="${btn.dataset.wmode}"]`)?.click();
-                    setTimeout(refreshMobileSolarPanel, 30);
+            document.querySelectorAll('.m36m-flt-btn').forEach(b => {
+                b.addEventListener('click', () => {
+                    Mob.specFilter = b.dataset.flt;
+                    renderMobilePriceCards();
                 });
             });
-
-            document.getElementById('m36b-open-solar-tab').addEventListener('click', () => {
-                setActiveSheet('design');
-                // Click the sidebar's Solar tab button cleanly
-                const solTabBtn = document.querySelector('[data-tab="solar"], [data-target="tab-solar"], #tab-btn-solar') ||
-                    Array.from(document.querySelectorAll('[data-m34-role="sidebar"] button')).find(b => /solar/i.test(b.textContent || ''));
+            document.getElementById('m36m-blink-std').addEventListener('click', () => {
+                document.getElementById('blink-std-btn')?.click();
+                setTimeout(renderMobilePriceCards, 45);
+            });
+            document.getElementById('m36m-blink-spec').addEventListener('click', () => {
+                document.getElementById('blink-custom-btn')?.click();
+                setTimeout(renderMobilePriceCards, 45);
+            });
+            document.getElementById('m36m-open-quote-modal').addEventListener('click', () => {
+                const btn = findNativeQuoteModalBtn();
+                if (btn) {
+                    openSheet(null);
+                    btn.click();
+                }
+            });
+            document.getElementById('m36m-open-solar-calc').addEventListener('click', () => {
+                openSheet(null);
+                document.getElementById('open-solar-energy-btn')?.click();
+            });
+            document.getElementById('m36m-edit-solar-panels').addEventListener('click', () => {
+                openSheet('design');
+                const solTabBtn = document.querySelector('#m36m-design-portal-body [data-tab="solar"], #m36m-design-portal-body [data-target="tab-solar"], #tab-btn-solar') ||
+                    Array.from(document.querySelectorAll('#m36m-design-portal-body button')).find(b => /solar/i.test(b.textContent || ''));
                 solTabBtn?.click();
             });
 
-            document.getElementById('m36b-open-solar-modal').addEventListener('click', () => {
-                setActiveSheet(null);
-                document.getElementById('open-solar-energy-btn')?.click();
-            });
-
-            document.getElementById('m36b-open-quote-modal').addEventListener('click', () => {
-                const nativeBtn = findNativeSpecModalButton();
-                if (nativeBtn) {
-                    setActiveSheet(null);
-                    nativeBtn.click();
-                }
-            });
-
-            document.querySelectorAll('.m36b-flt-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    MobUi.specFilter = btn.dataset.flt;
-                    renderMobilePriceListCards();
-                });
-            });
-
-            document.getElementById('m36b-blink-std').addEventListener('click', () => {
-                document.getElementById('blink-std-btn')?.click();
-                setTimeout(renderMobilePriceListCards, 45);
-            });
-            document.getElementById('m36b-blink-spec').addEventListener('click', () => {
-                document.getElementById('blink-custom-btn')?.click();
-                setTimeout(renderMobilePriceListCards, 45);
-            });
-
-            // Keep Mobile Shell synced with Cinema / Multi-View / Window Resize
-            window.addEventListener('resize', syncMobileViewportMode);
+            // Keep portals & overlays cleanly synced across resize and Cinema / Multi-View toggles
+            window.addEventListener('resize', syncViewport);
             window.addEventListener('click', (e) => {
                 if (e.target && e.target.closest('#cinema-tour-top-btn, #cinema-exit-btn, .nav-mv-btn, #mv-exit-btn')) {
-                    setTimeout(syncMobileViewportMode, 45);
+                    setTimeout(syncViewport, 45);
                 }
             });
 
             // =========================================================================
-            // 36B-10. NON-DESTRUCTIVE LIFECYCLE HOOKS (INCLUDING TAGS DEFAULT-OFF)
+            // 11. NON-DESTRUCTIVE LIFECYCLE HOOKS
             // =========================================================================
-            const _prevUpdateSolarM36B = updateSolar;
-            const _prevBuildHouseM36B = buildHouse;
-            const _prevInitM36B = init;
+            const _prevUpdateSolarM36M = updateSolar;
+            const _prevBuildHouseM36M = buildHouse;
+            const _prevApplySnapM36M = applySpecSnapshot;
+            const _prevInitM36M = init;
 
             updateSolar = function(dayOfYear, timeHours) {
-                _prevUpdateSolarM36B(dayOfYear, timeHours);
-                if (MobUi.isMobile) {
-                    syncMobileControlsState();
-                    if (MobUi.activeSheet === 'solar') refreshMobileSolarPanel();
-                }
+                _prevUpdateSolarM36M(dayOfYear, timeHours);
+                if (Mob.active) syncMobileStateUI();
             };
 
             buildHouse = function() {
-                _prevBuildHouseM36B();
-                if (MobUi.isMobile) {
-                    syncMobileControlsState();
-                    if (MobUi.activeSheet === 'solar') {
-                        refreshMobileSolarPanel();
-                        renderMobilePriceListCards();
+                _prevBuildHouseM36M();
+                if (Mob.active) {
+                    syncMobileStateUI();
+                    if (Mob.sheet === 'more') {
+                        renderMobilePriceCards();
+                        renderMobileSolarSummary();
+                    }
+                }
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                _prevApplySnapM36M(snap, preserveQuotes);
+                if (Mob.active) {
+                    syncMobileStateUI();
+                    if (Mob.sheet === 'more') {
+                        renderMobilePriceCards();
+                        renderMobileSolarSummary();
                     }
                 }
             };
 
             init = function() {
-                _prevInitM36B();
-                // Default 3D Selection Tags to OFF on startup across both Desktop & Mobile
-                forceLabelsOffOnce();
-                syncMobileViewportMode();
+                _prevInitM36M();
+                set3DTagsOffByDefault();
+                syncViewport();
                 setTimeout(() => {
-                    syncMobileViewportMode();
-                    refreshMobileSolarPanel();
+                    set3DTagsOffByDefault();
+                    syncViewport();
                 }, 140);
             };
         })();
