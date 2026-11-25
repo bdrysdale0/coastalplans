@@ -18574,13 +18574,7 @@
             // 8. DATA RENDERERS (MOBILE PRICE CARDS, SOLAR SUMMARY & JSON IO)
             // =========================================================================
             function findNativeQuoteModalBtn() {
-                const btns = Array.from(document.querySelectorAll('button'));
-                return btns.find(b => {
-                    if (b.closest('.m36m-sheet, #m36m-bottom-nav, #m36m-top-pill')) return false;
-                    const id = (b.id || '').toLowerCase();
-                    const txt = (b.textContent || '').toLowerCase();
-                    return /spec|quote|price|schedule|budget|bom/.test(id) || /price list|spec sheet|builder.*quote|selections.*cost/.test(txt);
-                }) || null;
+                return document.getElementById('open-selections-btn');
             }
 
             function renderMobilePriceCards() {
@@ -18593,23 +18587,26 @@
                     catalog = typeof getSelectionsCatalog === 'function' ? getSelectionsCatalog() : [];
                 } catch {}
 
-                const upgCount = catalog.filter(r => r.status === 'UPG').length;
-                const stdCount = catalog.length - upgCount;
+                const isRowUpg = (r) => r.status === 'UPGRADE' || r.status === 'UPG';
+                const upgRows = catalog.filter(isRowUpg);
+                const upgCount = upgRows.length;
+                const stdCount = catalog.filter(r => r.status === 'STD').length;
 
-                let liveTotalTxt = '';
-                document.querySelectorAll('[id*="budget" i], [id*="cost" i], [id*="upgrade" i]').forEach(el => {
-                    if (liveTotalTxt || el.closest('.m36m-sheet')) return;
-                    const m = (el.textContent || '').match(/\+?\$\s?[\d,]+/);
-                    if (m) liveTotalTxt = m[0];
+                let liveTotal = 0;
+                upgRows.forEach(r => {
+                    if (r.costKey && typeof SelectionsState !== 'undefined' && SelectionsState.upgradeQuotes) {
+                        liveTotal += Number(SelectionsState.upgradeQuotes[r.costKey]) || 0;
+                    }
                 });
 
                 if (sumEl) {
-                    sumEl.textContent = `${catalog.length} Items • ${upgCount} UPG / ${stdCount} STD${liveTotalTxt ? ' • ' + liveTotalTxt : ''}`;
+                    const costTxt = liveTotal > 0 ? ` • $${Math.round(liveTotal).toLocaleString('en-AU')}` : '';
+                    sumEl.textContent = `${catalog.length} Items • ${upgCount} UPG / ${stdCount} STD${costTxt}`;
                 }
 
                 const rows = catalog.filter(r => {
-                    if (Mob.specFilter === 'upg') return r.status === 'UPG';
-                    if (Mob.specFilter === 'std') return r.status !== 'UPG';
+                    if (Mob.specFilter === 'upg') return r.status !== 'STD';
+                    if (Mob.specFilter === 'std') return r.status === 'STD';
                     return true;
                 });
 
@@ -18627,15 +18624,20 @@
                     grouped.forEach((items, trade) => {
                         html += `<div class="text-[11px] font-bold uppercase tracking-wider text-sky-300 pt-2 px-1">${trade}</div>`;
                         items.forEach(r => {
-                            const isUpg = r.status === 'UPG';
+                            const isUpg = isRowUpg(r);
+                            const isQ = r.status === 'QUESTION';
                             const badgeCls = isUpg
                                 ? 'bg-amber-400/20 text-amber-200 border border-amber-400/40'
-                                : 'bg-emerald-400/20 text-emerald-200 border border-emerald-400/35';
+                                : isQ
+                                    ? 'bg-sky-400/20 text-sky-200 border border-sky-400/40'
+                                    : 'bg-emerald-400/20 text-emerald-200 border border-emerald-400/35';
+                            const badgeTxt = isUpg ? 'UPG' : (isQ ? 'BUILDER Q' : 'STD');
+
                             let priceHtml = '';
-                            if (r.costKey && typeof UPGRADE_COSTS !== 'undefined' && UPGRADE_COSTS && UPGRADE_COSTS[r.costKey] !== undefined) {
-                                const amt = Number(UPGRADE_COSTS[r.costKey]);
+                            if (r.costKey && typeof SelectionsState !== 'undefined' && SelectionsState.upgradeQuotes && SelectionsState.upgradeQuotes[r.costKey] !== undefined) {
+                                const amt = Number(SelectionsState.upgradeQuotes[r.costKey]);
                                 if (!Number.isNaN(amt) && amt !== 0) {
-                                    priceHtml = `<span class="font-mono text-xs font-extrabold ${amt > 0 ? 'text-amber-300' : 'text-emerald-300'}">${amt > 0 ? '+' : '-'}$${Math.abs(amt).toLocaleString()}</span>`;
+                                    priceHtml = `<span class="font-mono text-xs font-extrabold ${amt > 0 ? 'text-amber-300' : 'text-emerald-300'}">${amt > 0 ? '+' : '-'}$${Math.abs(amt).toLocaleString('en-AU')}</span>`;
                                 }
                             }
                             html += `
@@ -18644,7 +18646,7 @@
                                         <div class="text-sm font-bold text-white leading-snug">${r.item || 'Selection'}</div>
                                         <div class="flex items-center gap-1.5 shrink-0">
                                             ${priceHtml}
-                                            <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold ${badgeCls}">${isUpg ? 'UPG' : 'STD'}</span>
+                                            <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold ${badgeCls}">${badgeTxt}</span>
                                         </div>
                                     </div>
                                     <div class="text-xs font-semibold text-sky-200 leading-relaxed">${r.selection || '—'}</div>
@@ -18662,7 +18664,7 @@
                 const isStd = (typeof blinkMode !== 'undefined' && blinkMode === 'std');
                 document.getElementById('m36m-blink-std')?.classList.toggle('m36m-on', isStd);
                 document.getElementById('m36m-blink-spec')?.classList.toggle('m36m-on', !isStd);
-            }
+            }            
 
             function renderMobileSolarSummary() {
                 const specEl = document.getElementById('m36m-solar-spec-txt');
@@ -20709,32 +20711,36 @@
                     background: rgba(2, 6, 23, 0.82);
                     backdrop-filter: blur(8px);
                     display: none;
-                    flex-direction: column;
                     align-items: center;
+                    justify-content: center;
                     padding: 12px;
-                    overflow-y: auto;
-                    -webkit-overflow-scrolling: touch;
                 }
                 #m39-pack-modal.m39-open { display: flex; }
 
                 #m39-pack-sheet {
                     width: 100%;
                     max-width: 980px;
+                    max-height: calc(100dvh - 24px);
+                    display: flex;
+                    flex-direction: column;
                     background: #ffffff;
                     color: #0f172a;
                     border-radius: 18px;
                     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
                     overflow: hidden;
-                    margin-bottom: 24px;
                 }
                 .m39-doc-body {
+                    flex: 1 1 auto;
+                    min-height: 0;
+                    overflow-y: auto;
+                    -webkit-overflow-scrolling: touch;
                     padding: 24px 28px 32px;
                     font-size: 12px;
                     line-height: 1.45;
                 }
                 @media (max-width: 640px) {
                     #m39-pack-modal { padding: 0; }
-                    #m39-pack-sheet { border-radius: 0; margin-bottom: 0; }
+                    #m39-pack-sheet { border-radius: 0; max-height: 100dvh; height: 100dvh; }
                     .m39-doc-body { padding: 14px 14px 28px; font-size: 11.5px; }
                 }
                 .m39-sec-title {
@@ -20845,13 +20851,20 @@
                         backdrop-filter: none !important;
                     }
                     body.printing-builder-pack #m39-pack-sheet {
+                        display: block !important;
+                        height: auto !important;
+                        max-height: none !important;
                         max-width: 100% !important;
                         box-shadow: none !important;
                         border-radius: 0 !important;
                         margin: 0 !important;
                         overflow: visible !important;
                     }
-                    body.printing-builder-pack .m39-doc-body { padding: 6mm 8mm !important; }
+                    body.printing-builder-pack .m39-doc-body {
+                        overflow: visible !important;
+                        height: auto !important;
+                        padding: 6mm 8mm !important;
+                    }
                     body.printing-builder-pack .m39-no-print { display: none !important; }
                     body.printing-builder-pack .m39-page-break {
                         break-before: page;
