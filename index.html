@@ -3487,7 +3487,7 @@
                 addBox(g, 0.44, 0.48, 0.48, 11.24, y + 0.005, bz, furnMats.oak);
                 addTableLamp(g, addCyl, 11.24, y + 0.485, bz);
             });
-            addWallPainting(g, addBox, 'Z', 11.53, y + 1.65, -2.75, 1.25, 0.75, -1, 0);
+            //addWallPainting(g, addBox, 'Z', 11.53, y + 1.65, -2.75, 1.25, 0.75, -1, 0);
             addIndoorPlant(g, addCyl, bounds.X_FRONT_BED1 + 0.55, y + 0.005, bounds.Z_NW + 0.55, 1.15);
         });
 
@@ -19149,6 +19149,2195 @@
                 }, 140);
             };
         })();
+
+// =========================================================================
+        // 37. DROP-IN MODULE: 3D POINT-TO-POINT TAPE MEASURE & CLEARANCE CHECKER
+        //     Supports Free / Horiz / Vert / Ortho Axis Snap, Live Preview,
+        //     8 Lilli Pilli Clearance Zones, Mobile UI & JSON Persistence
+        // Paste below Module 36B and immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initTapeMeasureAndClearancePlugin() {
+            const MeasureState = {
+                active: false,
+                axisMode: 'free',       // 'free' | 'horiz' | 'vert' | 'ortho'
+                showClearances: false,
+                panelExpanded: false,
+                draftA: null,           // THREE.Vector3 | null
+                hoverPt: null,          // THREE.Vector3 | null
+                measurements: [],       // [{ id, a: Vector3, b: Vector3, labelEl, group }]
+                clearanceItems: [],     // [{ id, label, ... , group, labelEl }]
+                nextId: 1,
+                lastProjTs: 0,
+                lastHoverTs: 0
+            };
+
+            // =========================================================================
+            // 37A. STYLES & OVERLAY CONTAINERS
+            // =========================================================================
+            const m37Style = document.createElement('style');
+            m37Style.id = 'm37-measure-css';
+            m37Style.textContent = `
+                #m37-labels-layer {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 28;
+                    pointer-events: none;
+                    overflow: hidden;
+                }
+                .m37-dim-pill {
+                    position: absolute;
+                    left: 0;
+                    top: 0;
+                    transform: translate3d(-9999px, -9999px, 0);
+                    pointer-events: auto;
+                    background: rgba(15, 23, 42, 0.90);
+                    backdrop-filter: blur(8px);
+                    -webkit-backdrop-filter: blur(8px);
+                    border: 1.5px solid rgba(56, 189, 248, 0.72);
+                    border-radius: 9999px;
+                    padding: 3px 9px;
+                    color: #f8fafc;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                    font-size: 11px;
+                    font-weight: 700;
+                    white-space: nowrap;
+                    box-shadow: 0 6px 18px rgba(2, 6, 23, 0.55);
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    user-select: none;
+                }
+                .m37-dim-pill.m37-preview {
+                    border-color: #fbbf24;
+                    color: #fef08a;
+                    pointer-events: none;
+                }
+                .m37-dim-pill.m37-clr-pass {
+                    border-color: #34d399;
+                    color: #d1fae5;
+                    background: rgba(6, 78, 59, 0.88);
+                }
+                .m37-dim-pill.m37-clr-tight {
+                    border-color: #fbbf24;
+                    color: #fef3c7;
+                    background: rgba(120, 53, 15, 0.90);
+                }
+                .m37-dim-sub {
+                    font-size: 9.5px;
+                    font-weight: 500;
+                    color: #94a3b8;
+                }
+                .m37-del-x {
+                    cursor: pointer;
+                    color: #fda4af;
+                    font-weight: 800;
+                    padding: 0 2px;
+                    line-height: 1;
+                }
+                .m37-del-x:hover { color: #ffffff; }
+
+                /* Floating Measure Toolbar */
+                #m37-toolbar {
+                    position: fixed;
+                    left: 50%;
+                    bottom: 62px;
+                    transform: translateX(-50%);
+                    z-index: 56;
+                    max-width: calc(100vw - 16px);
+                    pointer-events: auto;
+                }
+                body.m36m-mobile #m37-toolbar {
+                    bottom: calc(74px + env(safe-area-inset-bottom));
+                    width: calc(100vw - 16px);
+                    max-width: 460px;
+                }
+                body.m37-measuring canvas {
+                    cursor: crosshair !important;
+                }
+                .m37-axis-btn {
+                    padding: 4px 8px;
+                    border-radius: 8px;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: #cbd5e1;
+                    background: rgba(255, 255, 255, 0.08);
+                    transition: all 0.14s ease;
+                }
+                .m37-axis-btn.m37-on {
+                    background: #38bdf8;
+                    color: #0f172a;
+                    font-weight: 800;
+                }
+                body.m36m-mobile .m37-axis-btn {
+                    min-height: 36px;
+                    font-size: 12px;
+                    flex: 1;
+                }
+            `;
+            document.head.appendChild(m37Style);
+
+            const labelsLayer = document.createElement('div');
+            labelsLayer.id = 'm37-labels-layer';
+            document.body.appendChild(labelsLayer);
+
+            // =========================================================================
+            // 37B. THREE.JS GROUPS & SHARED MATERIALS (ZERO SHADOW COST)
+            // =========================================================================
+            const measureRoot = new THREE.Group();
+            measureRoot.name = 'm37-measure-root';
+            const userLinesGroup = new THREE.Group();
+            const previewGroup = new THREE.Group();
+            const clearanceGroup = new THREE.Group();
+            measureRoot.add(userLinesGroup, previewGroup, clearanceGroup);
+            scene.add(measureRoot);
+
+            const m37Mats = {
+                dotMain:    new THREE.MeshBasicMaterial({ color: 0x38bdf8, depthTest: false }),
+                dotPreview: new THREE.MeshBasicMaterial({ color: 0xfbbf24, depthTest: false }),
+                dotPass:    new THREE.MeshBasicMaterial({ color: 0x34d399, depthTest: false }),
+                dotTight:   new THREE.MeshBasicMaterial({ color: 0xf59e0b, depthTest: false }),
+                lineMain:   new THREE.LineBasicMaterial({ color: 0x38bdf8, depthTest: false }),
+                linePreview:new THREE.LineBasicMaterial({ color: 0xfbbf24, depthTest: false }),
+                linePass:   new THREE.LineBasicMaterial({ color: 0x34d399, depthTest: false }),
+                lineTight:  new THREE.LineBasicMaterial({ color: 0xf59e0b, depthTest: false })
+            };
+            const dotGeo = new THREE.SphereGeometry(0.042, 12, 10);
+
+            // Live hover cursor & rubber-band draft line
+            const hoverDot = new THREE.Mesh(dotGeo, m37Mats.dotPreview);
+            hoverDot.renderOrder = 999;
+            hoverDot.visible = false;
+            const draftDotA = new THREE.Mesh(dotGeo, m37Mats.dotPreview);
+            draftDotA.renderOrder = 999;
+            draftDotA.visible = false;
+            const previewLineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+            const previewLine = new THREE.Line(previewLineGeo, m37Mats.linePreview);
+            previewLine.renderOrder = 998;
+            previewLine.visible = false;
+            previewGroup.add(hoverDot, draftDotA, previewLine);
+
+            const previewLabelEl = document.createElement('div');
+            previewLabelEl.className = 'm37-dim-pill m37-preview';
+            previewLabelEl.style.display = 'none';
+            labelsLayer.appendChild(previewLabelEl);
+
+            // =========================================================================
+            // 37C. FORMATTING & AXIS-SNAP MATH
+            // =========================================================================
+            function fmtDist(a, b) {
+                const dist = a.distanceTo(b);
+                const mm = Math.round(dist * 1000);
+                const horizMm = Math.round(Math.hypot(b.x - a.x, b.z - a.z) * 1000);
+                const vertMm = Math.round(Math.abs(b.y - a.y) * 1000);
+                const main = mm >= 1000
+                    ? `${mm.toLocaleString('en-AU')} mm (${dist.toFixed(2)} m)`
+                    : `${mm} mm`;
+                const isAngled = horizMm > 25 && vertMm > 25;
+                const sub = isAngled ? `H ${horizMm} • V ${vertMm}` : '';
+                return { dist, mm, horizMm, vertMm, main, sub };
+            }
+
+            function applyAxisConstraint(pointA, rawB, shiftHeld = false) {
+                const out = rawB.clone();
+                if (!pointA) return out;
+                const mode = shiftHeld ? 'ortho' : MeasureState.axisMode;
+
+                if (mode === 'horiz') {
+                    out.y = pointA.y;
+                } else if (mode === 'vert') {
+                    out.x = pointA.x;
+                    out.z = pointA.z;
+                } else if (mode === 'ortho') {
+                    const dx = Math.abs(rawB.x - pointA.x);
+                    const dy = Math.abs(rawB.y - pointA.y);
+                    const dz = Math.abs(rawB.z - pointA.z);
+                    if (dx >= dy && dx >= dz) { out.y = pointA.y; out.z = pointA.z; }
+                    else if (dy >= dx && dy >= dz) { out.x = pointA.x; out.z = pointA.z; }
+                    else { out.x = pointA.x; out.y = pointA.y; }
+                }
+                return out;
+            }
+
+            function buildDimensionSegment3D(a, b, lineMat, dotMat) {
+                const g = new THREE.Group();
+                const geo = new THREE.BufferGeometry().setFromPoints([a.clone(), b.clone()]);
+                const line = new THREE.Line(geo, lineMat);
+                line.renderOrder = 995;
+
+                const dA = new THREE.Mesh(dotGeo, dotMat);
+                dA.position.copy(a);
+                dA.renderOrder = 996;
+                const dB = new THREE.Mesh(dotGeo, dotMat);
+                dB.position.copy(b);
+                dB.renderOrder = 996;
+
+                // Subtle perpendicular end-ticks so architectural dimensions read crisply
+                const dir = new THREE.Vector3().subVectors(b, a);
+                const len = dir.length();
+                if (len > 0.05) {
+                    dir.normalize();
+                    const up = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+                    const tick = new THREE.Vector3().crossVectors(dir, up).normalize().multiplyScalar(0.085);
+                    const tickGeo = new THREE.BufferGeometry().setFromPoints([
+                        a.clone().add(tick), a.clone().sub(tick),
+                        b.clone().add(tick), b.clone().sub(tick)
+                    ]);
+                    const ticks = new THREE.LineSegments(tickGeo, lineMat);
+                    ticks.renderOrder = 995;
+                    g.add(ticks);
+                }
+
+                g.add(line, dA, dB);
+                return g;
+            }
+
+            // =========================================================================
+            // 37D. USER MEASUREMENTS CRUD
+            // =========================================================================
+            function addUserMeasurement(a, b) {
+                const id = MeasureState.nextId++;
+                const aVec = a.clone();
+                const bVec = b.clone();
+                const grp = buildDimensionSegment3D(aVec, bVec, m37Mats.lineMain, m37Mats.dotMain);
+                userLinesGroup.add(grp);
+
+                const f = fmtDist(aVec, bVec);
+                const lbl = document.createElement('div');
+                lbl.className = 'm37-dim-pill';
+                lbl.innerHTML = `
+                    <span>${f.main}</span>
+                    ${f.sub ? `<span class="m37-dim-sub">${f.sub}</span>` : ''}
+                    <span class="m37-del-x" title="Remove measurement">✕</span>
+                `;
+                lbl.querySelector('.m37-del-x').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    removeUserMeasurement(id);
+                });
+                labelsLayer.appendChild(lbl);
+
+                MeasureState.measurements.push({ id, a: aVec, b: bVec, group: grp, labelEl: lbl });
+                syncToolbarUI();
+                projectAllMeasureLabels(true);
+            }
+
+            function removeUserMeasurement(id) {
+                const idx = MeasureState.measurements.findIndex(m => m.id === id);
+                if (idx === -1) return;
+                const item = MeasureState.measurements[idx];
+                item.group.traverse(o => { if (o.geometry && o.geometry !== dotGeo) o.geometry.dispose(); });
+                userLinesGroup.remove(item.group);
+                item.labelEl.remove();
+                MeasureState.measurements.splice(idx, 1);
+                syncToolbarUI();
+                projectAllMeasureLabels(true);
+            }
+
+            function clearAllUserMeasurements() {
+                while (MeasureState.measurements.length > 0) {
+                    removeUserMeasurement(MeasureState.measurements[0].id);
+                }
+                cancelDraft();
+            }
+
+            function cancelDraft() {
+                MeasureState.draftA = null;
+                draftDotA.visible = false;
+                previewLine.visible = false;
+                previewLabelEl.style.display = 'none';
+                syncToolbarUI();
+            }
+
+            // =========================================================================
+            // 37E. LILLI PILLI ARCHITECTURAL CLEARANCE CHECKER (8 VERIFIED ZONES)
+            // =========================================================================
+            function getClearanceSpecs() {
+                const liveCeilY = Y_GF_CEIL + (roofGroup ? roofGroup.position.y : 0);
+                const gfWalkY = Y_GF_FFL + 0.85;
+                const garY = Y_GAR_SSL + 0.65;
+
+                return [
+                    {
+                        id: 'clr-island',
+                        name: 'Kitchen Island Walkway',
+                        minPassMm: 1050,
+                        a: new THREE.Vector3(14.885, Y_GF_FFL + 0.92, -2.18),
+                        b: new THREE.Vector3(16.110, Y_GF_FFL + 0.92, -2.18),
+                        note: 'Back bench to island (Rec. >= 1,050 mm)',
+                        camP: [15.5, Y_GF_FFL + 2.15, -0.35],
+                        camT: [15.5, Y_GF_FFL + 0.85, -2.25]
+                    },
+                    {
+                        id: 'clr-booth',
+                        name: 'Island ↔ Dining Table',
+                        minPassMm: 1200,
+                        a: new THREE.Vector3(17.09, Y_GF_FFL + 0.88, -3.10),
+                        b: new THREE.Vector3(18.78, Y_GF_FFL + 0.88, -3.10),
+                        note: 'Stool + dining circulation (Rec. >= 1,200 mm)',
+                        camP: [17.9, Y_GF_FFL + 2.10, -0.75],
+                        camT: [18.1, Y_GF_FFL + 0.85, -3.15]
+                    },
+                    {
+                        id: 'clr-tesla-driver',
+                        name: 'Garage: Model Y Driver Side',
+                        minPassMm: 750,
+                        a: new THREE.Vector3(11.55, garY, Z_SPLIT + 0.05),
+                        b: new THREE.Vector3(11.55, garY, 2.60 - 0.94),
+                        note: 'Entry wall to car door (Rec. >= 750 mm)',
+                        camP: [13.9, Y_GAR_SSL + 1.85, 1.35],
+                        camT: [11.4, Y_GAR_SSL + 0.70, 1.55]
+                    },
+                    {
+                        id: 'clr-tesla-front',
+                        name: 'Garage: Front Door ↔ Bumper',
+                        minPassMm: 450,
+                        a: new THREE.Vector3(X_FRONT_GARAGE + 0.07, garY, 2.60),
+                        b: new THREE.Vector3(9.26, garY, 2.60),
+                        note: 'Tight front nose buffer to D02 (450 mm ideal)',
+                        camP: [10.6, Y_GAR_SSL + 1.65, 1.05],
+                        camT: [9.10, Y_GAR_SSL + 0.65, 2.60]
+                    },
+                    {
+                        id: 'clr-tesla-rear',
+                        name: 'Garage: Rear Bumper ↔ Shelves',
+                        minPassMm: 500,
+                        a: new THREE.Vector3(13.84, garY, 2.60),
+                        b: new THREE.Vector3(14.42, garY, 2.60),
+                        note: 'Boot walkway to rear storage rack',
+                        camP: [13.2, Y_GAR_SSL + 1.85, 1.10],
+                        camT: [14.1, Y_GAR_SSL + 0.75, 2.75]
+                    },
+                    {
+                        id: 'clr-bed1-foot',
+                        name: 'Master Bed 1 Foot Walkway',
+                        minPassMm: 900,
+                        a: new THREE.Vector3(X_FRONT_BED1 + 0.12, gfWalkY, -2.75),
+                        b: new THREE.Vector3(9.38, gfWalkY, -2.75),
+                        note: 'Front SW wall to bed foot (Rec. >= 900 mm)',
+                        camP: [8.85, Y_GF_FFL + 1.90, -1.25],
+                        camT: [9.20, Y_GF_FFL + 0.65, -2.85]
+                    },
+                    {
+                        id: 'clr-balcony',
+                        name: 'Alfresco Balcony Clear Depth',
+                        minPassMm: 2200,
+                        a: new THREE.Vector3(X_REAR_WALL + 0.12, Y_GF_FFL + 0.12, -0.15),
+                        b: new THREE.Vector3(X_ALFRESCO_END - 0.06, Y_GF_FFL + 0.12, -0.15),
+                        note: 'Rear wall to balustrade (2.45 m coastal deck)',
+                        camP: [26.8, Y_GF_FFL + 2.40, -3.5],
+                        camT: [22.6, Y_GF_FFL + 0.45, -0.15]
+                    },
+                    {
+                        id: 'clr-ceiling',
+                        name: 'Live GF Ceiling Height',
+                        minPassMm: 2400,
+                        a: new THREE.Vector3(18.2, Y_GF_FFL, 0.25),
+                        b: new THREE.Vector3(18.2, liveCeilY, 0.25),
+                        note: 'NCC habitable min. 2,400 mm (tracks ceiling toggle)',
+                        camP: [15.4, Y_GF_FFL + 1.45, 0.85],
+                        camT: [18.4, Y_GF_FFL + 1.35, 0.15]
+                    },
+                    {
+                        id: 'clr-setback-nw',
+                        name: 'NW Side Lot Setback',
+                        minPassMm: 900,
+                        a: new THREE.Vector3(14.0, getCutTerrainY(14.0, Z_NW) + 0.35, Z_NW),
+                        b: new THREE.Vector3(14.0, getCutTerrainY(14.0, -LOT_HALF_W) + 0.35, -LOT_HALF_W),
+                        note: 'Building NW wall to Lot 3 boundary (3.50 m)',
+                        camP: [14.0, Y_GF_FFL + 6.5, -13.5],
+                        camT: [14.0, Y_GF_FFL, -6.5]
+                    }
+                ];
+            }
+
+            function rebuildClearanceOverlays() {
+                // Clean old clearance meshes & labels
+                MeasureState.clearanceItems.forEach(c => {
+                    c.group.traverse(o => { if (o.geometry && o.geometry !== dotGeo) o.geometry.dispose(); });
+                    clearanceGroup.remove(c.group);
+                    c.labelEl.remove();
+                });
+                MeasureState.clearanceItems = [];
+
+                if (!MeasureState.showClearances) {
+                    renderClearanceChecklist();
+                    return;
+                }
+
+                const specs = getClearanceSpecs();
+                specs.forEach(sp => {
+                    const mm = Math.round(sp.a.distanceTo(sp.b) * 1000);
+                    const isPass = mm >= sp.minPassMm;
+                    const grp = buildDimensionSegment3D(
+                        sp.a, sp.b,
+                        isPass ? m37Mats.linePass : m37Mats.lineTight,
+                        isPass ? m37Mats.dotPass : m37Mats.dotTight
+                    );
+                    clearanceGroup.add(grp);
+
+                    const lbl = document.createElement('div');
+                    lbl.className = `m37-dim-pill ${isPass ? 'm37-clr-pass' : 'm37-clr-tight'}`;
+                    lbl.title = sp.note;
+                    lbl.innerHTML = `<span>${isPass ? '✓' : '⚠'} ${sp.name}: ${mm.toLocaleString('en-AU')} mm</span>`;
+                    lbl.style.cursor = 'pointer';
+                    lbl.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        focusClearanceZone(sp);
+                    });
+                    labelsLayer.appendChild(lbl);
+
+                    MeasureState.clearanceItems.push({ ...sp, mm, isPass, group: grp, labelEl: lbl });
+                });
+
+                renderClearanceChecklist();
+                projectAllMeasureLabels(true);
+            }
+
+            function focusClearanceZone(sp) {
+                if (typeof flyTo !== 'function') return;
+                // Automatically lift roof if focusing interior clearance from outside
+                if (sp.id !== 'clr-balcony' && sp.id !== 'clr-setback-nw' && sp.id !== 'clr-ceiling') {
+                    // Use wide 16mm interior lens cleanly if available
+                    document.querySelector('.nav-lens-btn[data-lens="16mm"]')?.click();
+                }
+                flyTo(new THREE.Vector3(...sp.camP), new THREE.Vector3(...sp.camT));
+            }
+
+            // =========================================================================
+            // 37F. RAYCASTING (CLICK vs DRAG PROTECTION + FAST SURFACE PICK)
+            // =========================================================================
+            const mRay = new THREE.Raycaster();
+            const mPtr = new THREE.Vector2();
+            let ptrDownX = 0, ptrDownY = 0, ptrMoved = false, shiftDown = false;
+
+            function getRaycastTargets() {
+                const targets = [];
+                if (houseGroup && houseGroup.visible) targets.push(houseGroup);
+                if (neighboursGroup && neighboursGroup.visible) targets.push(neighboursGroup);
+                const terrain = scene.getObjectByName('terrain');
+                if (terrain && terrain.visible) targets.push(terrain);
+                return targets;
+            }
+
+            function pickSurfacePoint(clientX, clientY) {
+                const rect = renderer.domElement.getBoundingClientRect();
+                mPtr.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+                mPtr.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+                mRay.setFromCamera(mPtr, camera);
+
+                const hits = mRay.intersectObjects(getRaycastTargets(), true);
+                for (let i = 0; i < hits.length; i++) {
+                    const obj = hits[i].object;
+                    if (!obj.visible || !obj.isMesh) continue;
+                    // Skip invisible ancestors
+                    let hiddenAnc = false;
+                    let cur = obj.parent;
+                    while (cur) {
+                        if (!cur.visible) { hiddenAnc = true; break; }
+                        cur = cur.parent;
+                    }
+                    if (hiddenAnc) continue;
+                    return hits[i].point.clone();
+                }
+                return null;
+            }
+
+            function isCinemaOrMultiActive() {
+                const cin = document.getElementById('cinema-overlay');
+                const mv = document.getElementById('multiview-grid-overlay');
+                return Boolean((cin && !cin.classList.contains('hidden')) || (mv && !mv.classList.contains('hidden')));
+            }
+
+            renderer.domElement.addEventListener('pointerdown', (e) => {
+                if (!MeasureState.active || isCinemaOrMultiActive()) return;
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                ptrDownX = e.clientX;
+                ptrDownY = e.clientY;
+                ptrMoved = false;
+            });
+
+            renderer.domElement.addEventListener('pointermove', (e) => {
+                if (!MeasureState.active || isCinemaOrMultiActive()) return;
+                if (Math.hypot(e.clientX - ptrDownX, e.clientY - ptrDownY) > 6) ptrMoved = true;
+
+                // Desktop live hover preview (throttled for GTX 1650 efficiency)
+                if (e.pointerType !== 'mouse') return;
+                const now = performance.now();
+                if (now - MeasureState.lastHoverTs < 32) return;
+                MeasureState.lastHoverTs = now;
+
+                const pt = pickSurfacePoint(e.clientX, e.clientY);
+                if (!pt) {
+                    hoverDot.visible = false;
+                    previewLine.visible = false;
+                    previewLabelEl.style.display = 'none';
+                    return;
+                }
+
+                const snapped = MeasureState.draftA ? applyAxisConstraint(MeasureState.draftA, pt, shiftDown) : pt;
+                MeasureState.hoverPt = snapped;
+                hoverDot.position.copy(snapped);
+                hoverDot.visible = true;
+
+                if (MeasureState.draftA) {
+                    const posAttr = previewLine.geometry.attributes.position;
+                    posAttr.setXYZ(0, MeasureState.draftA.x, MeasureState.draftA.y, MeasureState.draftA.z);
+                    posAttr.setXYZ(1, snapped.x, snapped.y, snapped.z);
+                    posAttr.needsUpdate = true;
+                    previewLine.visible = true;
+                    const f = fmtDist(MeasureState.draftA, snapped);
+                    previewLabelEl.innerHTML = `<span>${f.main}</span>${f.sub ? `<span class="m37-dim-sub">${f.sub}</span>` : ''}`;
+                    projectAllMeasureLabels(true);
+                }
+            });
+
+            renderer.domElement.addEventListener('pointerup', (e) => {
+                if (!MeasureState.active || isCinemaOrMultiActive()) return;
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                if (ptrMoved || Math.hypot(e.clientX - ptrDownX, e.clientY - ptrDownY) > 7) return;
+
+                const pt = pickSurfacePoint(e.clientX, e.clientY);
+                if (!pt) return;
+
+                if (!MeasureState.draftA) {
+                    MeasureState.draftA = pt;
+                    draftDotA.position.copy(pt);
+                    draftDotA.visible = true;
+                    syncToolbarUI();
+                } else {
+                    const ptB = applyAxisConstraint(MeasureState.draftA, pt, shiftDown);
+                    if (MeasureState.draftA.distanceTo(ptB) >= 0.015) {
+                        addUserMeasurement(MeasureState.draftA, ptB);
+                    }
+                    cancelDraft();
+                }
+            });
+
+            // =========================================================================
+            // 37G. 3D -> 2D LABEL PROJECTION (ZERO COST WHEN IDLE / EMPTY)
+            // =========================================================================
+            const _midVec = new THREE.Vector3();
+
+            function projectPill(el, worldPt, W, H) {
+                _midVec.copy(worldPt).project(camera);
+                if (_midVec.z < -1 || _midVec.z > 1) {
+                    el.style.display = 'none';
+                    return;
+                }
+                const sx = (_midVec.x * 0.5 + 0.5) * W;
+                const sy = (-_midVec.y * 0.5 + 0.5) * H;
+                if (sx < -60 || sx > W + 60 || sy < 40 || sy > H - 40) {
+                    el.style.display = 'none';
+                    return;
+                }
+                el.style.display = 'inline-flex';
+                el.style.transform = `translate3d(${sx.toFixed(1)}px, ${sy.toFixed(1)}px, 0) translate(-50%, -125%)`;
+            }
+
+            function projectAllMeasureLabels(force = false) {
+                const hasWork = MeasureState.measurements.length > 0 ||
+                                MeasureState.clearanceItems.length > 0 ||
+                                (MeasureState.active && MeasureState.draftA && MeasureState.hoverPt);
+                if (!hasWork || isCinemaOrMultiActive()) {
+                    if (previewLabelEl.style.display !== 'none') previewLabelEl.style.display = 'none';
+                    MeasureState.measurements.forEach(m => { m.labelEl.style.display = 'none'; });
+                    MeasureState.clearanceItems.forEach(c => { c.labelEl.style.display = 'none'; });
+                    return;
+                }
+
+                const now = performance.now();
+                if (!force && (now - MeasureState.lastProjTs < 24)) return;
+                MeasureState.lastProjTs = now;
+
+                const W = window.innerWidth;
+                const H = window.innerHeight;
+
+                for (let i = 0; i < MeasureState.measurements.length; i++) {
+                    const m = MeasureState.measurements[i];
+                    _midVec.addVectors(m.a, m.b).multiplyScalar(0.5);
+                    projectPill(m.labelEl, _midVec, W, H);
+                }
+
+                for (let i = 0; i < MeasureState.clearanceItems.length; i++) {
+                    const c = MeasureState.clearanceItems[i];
+                    _midVec.addVectors(c.a, c.b).multiplyScalar(0.5);
+                    projectPill(c.labelEl, _midVec, W, H);
+                }
+
+                if (MeasureState.active && MeasureState.draftA && MeasureState.hoverPt && previewLine.visible) {
+                    _midVec.addVectors(MeasureState.draftA, MeasureState.hoverPt).multiplyScalar(0.5);
+                    projectPill(previewLabelEl, _midVec, W, H);
+                } else if (previewLabelEl.style.display !== 'none') {
+                    previewLabelEl.style.display = 'none';
+                }
+            }
+
+            // =========================================================================
+            // 37H. FLOATING MEASURE TOOLBAR & CLEARANCE CHECKLIST PANEL
+            // =========================================================================
+            const toolbar = document.createElement('div');
+            toolbar.id = 'm37-toolbar';
+            toolbar.className = 'hidden glass-panel rounded-2xl border border-sky-400/40 p-2.5 shadow-2xl space-y-2 text-xs';
+            toolbar.innerHTML = `
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-sm">📏</span>
+                        <span class="font-bold text-sky-300">Tape Measure</span>
+                        <span id="m37-prompt" class="text-[11px] text-amber-200 font-medium">Click Point A</span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <button id="m37-clr-toggle" class="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-200 border border-emerald-400/35 text-[11px] font-bold transition">Clearances</button>
+                        <button id="m37-undo-btn" class="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-[11px] font-semibold transition" title="Undo last measurement">Undo</button>
+                        <button id="m37-clear-btn" class="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 text-rose-200 text-[11px] font-semibold transition" title="Clear all measurements">Clear</button>
+                        <button id="m37-done-btn" class="px-2.5 py-1 rounded-lg bg-sky-400 text-slate-950 text-[11px] font-extrabold transition">Done</button>
+                    </div>
+                </div>
+
+                <!-- Axis Snap Mode Strip -->
+                <div class="flex items-center gap-1">
+                    <span class="text-[10px] text-slate-400 uppercase font-bold mr-1 hidden sm:inline">Axis:</span>
+                    <button class="m37-axis-btn m37-on" data-axis="free" title="True 3D point-to-point distance">Free 3D</button>
+                    <button class="m37-axis-btn" data-axis="horiz" title="Lock horizontal (XZ) plane for walkways & room widths">Horiz</button>
+                    <button class="m37-axis-btn" data-axis="vert" title="Lock vertical (Y) height for ceilings & sills">Vert</button>
+                    <button class="m37-axis-btn" data-axis="ortho" title="Snap to nearest X, Y or Z axis (or hold Shift)">Ortho</button>
+                </div>
+
+                <!-- Collapsible Clearance Checklist -->
+                <div id="m37-clr-list" class="hidden max-h-48 overflow-y-auto custom-scroll border-t border-white/10 pt-2 space-y-1"></div>
+            `;
+            document.body.appendChild(toolbar);
+
+            function renderClearanceChecklist() {
+                const listEl = document.getElementById('m37-clr-list');
+                if (!listEl) return;
+                listEl.classList.toggle('hidden', !MeasureState.showClearances);
+                if (!MeasureState.showClearances) return;
+
+                listEl.innerHTML = MeasureState.clearanceItems.map(c => `
+                    <div class="flex items-center justify-between gap-2 bg-black/30 hover:bg-white/10 rounded-lg px-2 py-1.5 transition">
+                        <div class="min-w-0">
+                            <div class="text-[11px] font-bold ${c.isPass ? 'text-emerald-300' : 'text-amber-300'} truncate">
+                                ${c.isPass ? '✓' : '⚠'} ${c.name}
+                            </div>
+                            <div class="text-[10px] text-slate-400 truncate">${c.note}</div>
+                        </div>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                            <span class="font-mono text-[11px] font-bold text-white">${c.mm.toLocaleString('en-AU')} mm</span>
+                            <button class="m37-focus-clr px-2 py-0.5 rounded bg-sky-500/25 hover:bg-sky-500/45 text-sky-200 text-[10px] font-bold" data-cid="${c.id}">View</button>
+                        </div>
+                    </div>
+                `).join('');
+
+                listEl.querySelectorAll('.m37-focus-clr').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const found = MeasureState.clearanceItems.find(x => x.id === btn.dataset.cid);
+                        if (found) focusClearanceZone(found);
+                    });
+                });
+            }
+
+            // Inject Desktop & Mobile Launch Buttons
+            const navExtSlot = document.getElementById('pro-nav-ext-slot');
+            const navMeasBtn = document.createElement('button');
+            navMeasBtn.id = 'nav-measure-btn';
+            navMeasBtn.title = '3D Tape Measure & Architectural Clearance Checker (R)';
+            navMeasBtn.textContent = '📏 Measure';
+            if (navExtSlot) navExtSlot.appendChild(navMeasBtn);
+
+            const miniBar = document.getElementById('m34-mini-quick-bar');
+            const miniMeasBtn = document.createElement('button');
+            miniMeasBtn.id = 'm37-mini-btn';
+            miniMeasBtn.textContent = '📏';
+            miniMeasBtn.title = 'Tape Measure (R)';
+            if (miniBar) miniBar.appendChild(miniMeasBtn);
+
+            function injectMobileViewsMeasureBtn() {
+                const vSheetBody = document.querySelector('#m36m-sheet-views .m36m-sheet-body');
+                if (!vSheetBody || document.getElementById('m37-mob-measure-btn')) return;
+                const box = document.createElement('div');
+                box.className = 'space-y-1.5';
+                box.innerHTML = `
+                    <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Dimensions & Clearances</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="m37-mob-measure-btn" class="m36m-btn">📏 Tape Measure</button>
+                        <button id="m37-mob-clr-btn" class="m36m-btn m36m-emerald">✓ Clearances</button>
+                    </div>
+                `;
+                vSheetBody.insertBefore(box, vSheetBody.children[2] || vSheetBody.firstChild);
+
+                document.getElementById('m37-mob-measure-btn').addEventListener('click', () => {
+                    document.querySelector('#m36m-sheet-views .m36m-close')?.click();
+                    setMeasureMode(!MeasureState.active);
+                });
+                document.getElementById('m37-mob-clr-btn').addEventListener('click', () => {
+                    document.querySelector('#m36m-sheet-views .m36m-close')?.click();
+                    MeasureState.showClearances = !MeasureState.showClearances;
+                    if (MeasureState.showClearances && !MeasureState.active) setMeasureMode(true);
+                    rebuildClearanceOverlays();
+                    syncToolbarUI();
+                });
+            }
+
+            function syncToolbarUI() {
+                const open = MeasureState.active || MeasureState.showClearances;
+                toolbar.classList.toggle('hidden', !open || isCinemaOrMultiActive());
+                document.body.classList.toggle('m37-measuring', MeasureState.active);
+
+                const promptEl = document.getElementById('m37-prompt');
+                if (promptEl) {
+                    if (!MeasureState.active) promptEl.textContent = 'Clearance View Only';
+                    else if (!MeasureState.draftA) promptEl.textContent = 'Tap / Click Point A';
+                    else promptEl.textContent = 'Tap / Click Point B (Esc cancels)';
+                }
+
+                toolbar.querySelectorAll('.m37-axis-btn').forEach(b => {
+                    b.classList.toggle('m37-on', b.dataset.axis === MeasureState.axisMode);
+                });
+
+                const clrBtn = document.getElementById('m37-clr-toggle');
+                if (clrBtn) {
+                    clrBtn.className = MeasureState.showClearances
+                        ? 'px-2.5 py-1 rounded-lg bg-emerald-400 text-slate-950 text-[11px] font-extrabold transition'
+                        : 'px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-200 border border-emerald-400/35 text-[11px] font-bold transition';
+                }
+
+                if (navMeasBtn) {
+                    navMeasBtn.className = MeasureState.active
+                        ? 'px-2 py-1 rounded-lg bg-sky-400 text-slate-950 font-bold transition'
+                        : 'px-2 py-1 rounded-lg bg-white/10 text-slate-200 hover:text-white font-semibold transition';
+                }
+                if (miniMeasBtn) {
+                    miniMeasBtn.className = MeasureState.active
+                        ? 'px-2 py-1.5 rounded-xl bg-sky-400 text-slate-950 font-bold transition'
+                        : 'px-2 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 font-semibold transition';
+                }
+                document.getElementById('m37-mob-measure-btn')?.classList.toggle('m36m-on', MeasureState.active);
+                document.getElementById('m37-mob-clr-btn')?.classList.toggle('m36m-on', MeasureState.showClearances);
+            }
+
+            function setMeasureMode(enable) {
+                MeasureState.active = Boolean(enable);
+                if (!MeasureState.active) {
+                    cancelDraft();
+                    hoverDot.visible = false;
+                } else if (typeof treeMode !== 'undefined' && treeMode) {
+                    // Turn off Plant Flora Mode so clicks measure instead of planting trees
+                    document.getElementById('tree-mode-btn')?.click();
+                }
+                syncToolbarUI();
+            }
+
+            // Event Listeners
+            navMeasBtn.addEventListener('click', () => setMeasureMode(!MeasureState.active));
+            miniMeasBtn.addEventListener('click', () => setMeasureMode(!MeasureState.active));
+
+            document.getElementById('m37-done-btn').addEventListener('click', () => {
+                setMeasureMode(false);
+                if (MeasureState.showClearances) {
+                    MeasureState.showClearances = false;
+                    rebuildClearanceOverlays();
+                    syncToolbarUI();
+                }
+            });
+            document.getElementById('m37-clr-toggle').addEventListener('click', () => {
+                MeasureState.showClearances = !MeasureState.showClearances;
+                rebuildClearanceOverlays();
+                syncToolbarUI();
+            });
+            document.getElementById('m37-undo-btn').addEventListener('click', () => {
+                if (MeasureState.draftA) cancelDraft();
+                else if (MeasureState.measurements.length > 0) {
+                    removeUserMeasurement(MeasureState.measurements[MeasureState.measurements.length - 1].id);
+                }
+            });
+            document.getElementById('m37-clear-btn').addEventListener('click', clearAllUserMeasurements);
+
+            toolbar.querySelectorAll('.m37-axis-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    MeasureState.axisMode = btn.dataset.axis;
+                    syncToolbarUI();
+                });
+            });
+
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'Shift') shiftDown = true;
+                const tag = document.activeElement?.tagName;
+                if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+                if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    setMeasureMode(!MeasureState.active);
+                } else if (e.code === 'Escape' && MeasureState.active) {
+                    if (MeasureState.draftA) cancelDraft();
+                    else setMeasureMode(false);
+                }
+            });
+            window.addEventListener('keyup', (e) => { if (e.key === 'Shift') shiftDown = false; });
+
+            // Rebuild live ceiling clearance automatically if ceiling height changes
+            window.addEventListener('click', (e) => {
+                if (e.target && e.target.closest('.int-ceil-h-btn, #cinema-tour-top-btn, #cinema-exit-btn, .nav-mv-btn, #mv-exit-btn')) {
+                    setTimeout(() => {
+                        if (MeasureState.showClearances) rebuildClearanceOverlays();
+                        syncToolbarUI();
+                    }, 40);
+                }
+            });
+            window.addEventListener('resize', () => projectAllMeasureLabels(true));
+
+            // =========================================================================
+            // 37I. RENDER, LIFECYCLE & JSON SNAPSHOT HOOKS
+            // =========================================================================
+            const _prevRenderM37 = renderer.render.bind(renderer);
+            renderer.render = function(scn, cam) {
+                _prevRenderM37(scn, cam);
+                if (cam === camera) projectAllMeasureLabels(false);
+            };
+
+            const _prevCaptureM37 = captureSpecSnapshot;
+            const _prevApplyM37 = applySpecSnapshot;
+            const _prevInitM37 = init;
+
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureM37();
+                snap.measurements = MeasureState.measurements.map(m => ({
+                    a: [Number(m.a.x.toFixed(3)), Number(m.a.y.toFixed(3)), Number(m.a.z.toFixed(3))],
+                    b: [Number(m.b.x.toFixed(3)), Number(m.b.y.toFixed(3)), Number(m.b.z.toFixed(3))]
+                }));
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                _prevApplyM37(snap, preserveQuotes);
+                if (snap && Array.isArray(snap.measurements)) {
+                    clearAllUserMeasurements();
+                    snap.measurements.forEach(item => {
+                        if (Array.isArray(item.a) && Array.isArray(item.b)) {
+                            addUserMeasurement(new THREE.Vector3(...item.a), new THREE.Vector3(...item.b));
+                        }
+                    });
+                }
+                if (MeasureState.showClearances) rebuildClearanceOverlays();
+            };
+
+            init = function() {
+                _prevInitM37();
+                injectMobileViewsMeasureBtn();
+                syncToolbarUI();
+            };
+        })();
+        
+// =========================================================================
+        // 38. DROP-IN MODULE: ELECTRICAL, GPO, CEILING FAN & LIGHTING PLAN OVERLAY
+        //     Interactive 3D Markers, Real 3D Ceiling Fans, Click-to-Place Editor,
+        //     Category/Floor Filters, Mobile UI & JSON Persistence (0 FPS Idle Safe)
+        // Paste below Module 37 and immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initElectricalPlanOverlayPlugin() {
+            const ELEC_CATS = {
+                gpo:    { label: 'GPO',     full: 'Double GPO / USB-C',     color: '#f59e0b', hex: 0xf59e0b, icon: '🔌' },
+                switch: { label: 'Switch',  full: 'Light / Fan Switch',     color: '#38bdf8', hex: 0x38bdf8, icon: '🎛️' },
+                light:  { label: 'Light',   full: 'LED Downlight / Pendant',color: '#fde047', hex: 0xfde047, icon: '💡' },
+                fan:    { label: 'Fan',     full: 'Coastal Ceiling Fan',    color: '#22d3ee', hex: 0x22d3ee, icon: '🌀' },
+                data:   { label: 'Data/TV', full: 'TV / Data / NBN Point',  color: '#a78bfa', hex: 0xa78bfa, icon: '📡' },
+                ext:    { label: 'Ext/Ded', full: 'Dedicated / External',   color: '#34d399', hex: 0x34d399, icon: '⚡' }
+            };
+
+            const ElecState = {
+                visible: false,
+                keepFansVisible: true,
+                placeMode: false,
+                placeCat: 'gpo',
+                filterCat: 'all',     // 'all' | 'gpo' | 'switch' | 'light' | 'fan' | 'data' | 'ext'
+                filterFloor: 'all',   // 'all' | 'GF' | 'LGF'
+                customPoints: [],     // [{ id, cat, floor, room, title, note, x, y, z }]
+                omittedIds: new Set(),
+                nextCustomId: 1,
+                renderedNodes: [],    // [{ item, mesh, labelEl, pos }]
+                lastProjTs: 0
+            };
+
+            // =========================================================================
+            // 38A. CSS & LABEL OVERLAY LAYER
+            // =========================================================================
+            const m38Style = document.createElement('style');
+            m38Style.id = 'm38-electrical-css';
+            m38Style.textContent = `
+                #m38-labels-layer {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 27;
+                    pointer-events: none;
+                    overflow: hidden;
+                }
+                .m38-pin {
+                    position: absolute;
+                    left: 0;
+                    top: 0;
+                    transform: translate3d(-9999px, -9999px, 0);
+                    pointer-events: auto;
+                    background: rgba(15, 23, 42, 0.90);
+                    backdrop-filter: blur(8px);
+                    -webkit-backdrop-filter: blur(8px);
+                    border: 1.5px solid #f59e0b;
+                    border-radius: 9999px;
+                    padding: 2px 8px;
+                    color: #f8fafc;
+                    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+                    font-size: 10.5px;
+                    font-weight: 700;
+                    white-space: nowrap;
+                    box-shadow: 0 5px 14px rgba(2, 6, 23, 0.55);
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    user-select: none;
+                }
+                .m38-pin-del {
+                    color: #fda4af;
+                    font-weight: 800;
+                    cursor: pointer;
+                    margin-left: 2px;
+                    padding: 0 2px;
+                }
+                .m38-pin-del:hover { color: #ffffff; }
+
+                #m38-toolbar {
+                    position: fixed;
+                    left: 50%;
+                    bottom: 62px;
+                    transform: translateX(-50%);
+                    z-index: 56;
+                    max-width: calc(100vw - 16px);
+                    pointer-events: auto;
+                }
+                body.m36m-mobile #m38-toolbar {
+                    bottom: calc(74px + env(safe-area-inset-bottom));
+                    width: calc(100vw - 16px);
+                    max-width: 470px;
+                }
+                body.m38-placing canvas { cursor: cell !important; }
+                .m38-chip {
+                    padding: 4px 8px;
+                    border-radius: 8px;
+                    font-size: 10.5px;
+                    font-weight: 700;
+                    color: #cbd5e1;
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid transparent;
+                    transition: all 0.14s ease;
+                }
+                .m38-chip.m38-on {
+                    background: #38bdf8;
+                    color: #0f172a;
+                    font-weight: 800;
+                }
+                body.m36m-mobile .m38-chip {
+                    min-height: 34px;
+                    font-size: 11.5px;
+                }
+            `;
+            document.head.appendChild(m38Style);
+
+            const labelsLayer = document.createElement('div');
+            labelsLayer.id = 'm38-labels-layer';
+            document.body.appendChild(labelsLayer);
+
+            // =========================================================================
+            // 38B. THREE.JS GROUPS & 3D COASTAL CEILING FAN BUILDER
+            // =========================================================================
+            const elecMarkersGroup = new THREE.Group();
+            elecMarkersGroup.name = 'm38-elec-markers';
+            const ceilingFansGroup = new THREE.Group();
+            ceilingFansGroup.name = 'm38-ceiling-fans';
+            houseGroup.add(elecMarkersGroup, ceilingFansGroup);
+
+            const fanMats = {
+                motor: new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.35, metalness: 0.18 }),
+                blade: new THREE.MeshStandardMaterial({ color: 0xdec49e, roughness: 0.58, metalness: 0.02 }),
+                rod:   new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.32, metalness: 0.45 })
+            };
+            const markerGeo = new THREE.SphereGeometry(0.068, 12, 10);
+            const markerMats = {};
+            Object.keys(ELEC_CATS).forEach(k => {
+                markerMats[k] = new THREE.MeshBasicMaterial({ color: ELEC_CATS[k].hex, depthTest: false });
+            });
+
+            function buildCoastalCeilingFanMesh(x, ceilY, z, radius = 0.66) {
+                const g = new THREE.Group();
+                const canopy = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.065, 0.04, 14), fanMats.motor);
+                canopy.position.y = -0.02;
+                const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.18, 10), fanMats.rod);
+                rod.position.y = -0.11;
+                const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.088, 0.065, 16), fanMats.motor);
+                hub.position.y = -0.21;
+                g.add(canopy, rod, hub);
+
+                for (let i = 0; i < 3; i++) {
+                    const pivot = new THREE.Group();
+                    pivot.position.y = -0.21;
+                    pivot.rotation.y = (i * Math.PI * 2) / 3 + 0.35;
+                    const blade = new THREE.Mesh(new THREE.BoxGeometry(radius, 0.012, 0.115), fanMats.blade);
+                    blade.position.set(radius / 2 + 0.06, 0, 0);
+                    blade.rotation.x = 0.14;
+                    blade.castShadow = true;
+                    pivot.add(blade);
+                    g.add(pivot);
+                }
+                g.position.set(x, ceilY, z);
+                return g;
+            }
+
+            // =========================================================================
+            // 38C. PLAN-ACCURATE BASELINE ELECTRICAL SCHEDULE (328 GEORGE BASS DR)
+            // =========================================================================
+            function getLiveGfCeilY() {
+                return Y_GF_CEIL + (roofGroup ? roofGroup.position.y : 0);
+            }
+
+            function getBaselinePoints() {
+                const gf = Y_GF_FFL;
+                const gfC = getLiveGfCeilY();
+                const gar = Y_GAR_SSL;
+                const lgf = Y_LGF_SSL;
+                const lgfC = Y_LGF_CEIL;
+                const hasEv = SelectionsState.evCharger === 'tesla32a';
+                const hasDualAc = SelectionsState.acSpec === 'dual';
+                const hasPendants = SelectionsState.pendants === 'coastal';
+
+                const pts = [
+                    // --- MASTER BED 1 (GF) ---
+                    { id: 'b-bed1-gpo1', cat: 'gpo',    floor: 'GF',  room: 'Master Bed 1',    title: 'Bedside Double GPO + USB-C (L)', note: '550mm AFFL beside bedhead', x: 11.48, y: gf + 0.55, z: -4.00 },
+                    { id: 'b-bed1-gpo2', cat: 'gpo',    floor: 'GF',  room: 'Master Bed 1',    title: 'Bedside Double GPO + USB-C (R)', note: '550mm AFFL beside bedhead', x: 11.48, y: gf + 0.55, z: -1.50 },
+                    { id: 'b-bed1-tv',   cat: 'data',   floor: 'GF',  room: 'Master Bed 1',    title: 'TV / Data + Double GPO',         note: 'Wall-mount TV height 1200mm', x: 8.15,  y: gf + 1.20, z: -2.75 },
+                    { id: 'b-bed1-sw',   cat: 'switch', floor: 'GF',  room: 'Master Bed 1',    title: '2-Gang Light + Fan Switch',      note: 'At bedroom entry 1100mm', x: 11.48, y: gf + 1.10, z: -1.05 },
+                    { id: 'b-bed1-fan',  cat: 'fan',    floor: 'GF',  room: 'Master Bed 1',    title: '1320mm Coastal DC Fan',          note: 'DC remote + wall control', x: 10.10, y: gfC,       z: -2.75, radius: 0.64 },
+                    { id: 'b-bed1-l1',   cat: 'light',  floor: 'GF',  room: 'Master Bed 1',    title: '4× LED Downlights',              note: `${SelectionsState.ledTemp} dimmable`, x: 9.80,  y: gfC - 0.03, z: -2.10 },
+
+                    // --- ENSUITE & WIR (GF) ---
+                    { id: 'b-ens-gpo',   cat: 'gpo',    floor: 'GF',  room: 'Ensuite',         title: 'Vanity Double GPO',              note: '1050mm AFFL beside mirror', x: 14.08, y: gf + 1.05, z: -4.22 },
+                    { id: 'b-ens-sw',    cat: 'switch', floor: 'GF',  room: 'Ensuite',         title: '3-Gang Light / IXL / Exhaust',   note: 'Ducted exhaust to eave', x: 11.74, y: gf + 1.10, z: -2.66 },
+                    { id: 'b-wir-l',     cat: 'light',  floor: 'GF',  room: 'Walk-In Robe',    title: '2× LED Downlights (WIR)',        note: `${SelectionsState.ledTemp} sensor/switch`, x: 12.90, y: gfC - 0.03, z: -1.68 },
+
+                    // --- KITCHEN & DINING BOOTH (GF) ---
+                    { id: 'b-kit-gpo1',  cat: 'gpo',    floor: 'GF',  room: 'Kitchen',         title: 'Cooktop Bench Double GPO',       note: '1080mm AFFL splashback', x: 14.28, y: gf + 1.08, z: -3.95 },
+                    { id: 'b-kit-gpo2',  cat: 'gpo',    floor: 'GF',  room: 'Kitchen',         title: 'Coffee / Appliance Double GPO',  note: '1080mm NW benchtop', x: 16.25, y: gf + 1.08, z: Z_NW + 0.18 },
+                    { id: 'b-kit-gpo3',  cat: 'gpo',    floor: 'GF',  room: 'Kitchen',         title: 'Island End Double GPO',          note: 'Side panel 720mm AFFL', x: 16.60, y: gf + 0.72, z: -0.92 },
+                    { id: 'b-kit-sw',    cat: 'switch', floor: 'GF',  room: 'Kitchen',         title: '4-Gang Kitchen / Island Switch', note: 'Includes cooktop isolator', x: 14.28, y: gf + 1.10, z: -0.92 },
+                    { id: 'b-kit-l',     cat: 'light',  floor: 'GF',  room: 'Kitchen',         title: hasPendants ? 'LEDs + 2× Island Pendants' : '4× Kitchen LED Downlights', note: SelectionsState.ledTemp, x: 16.60, y: gfC - 0.03, z: -2.15 },
+                    { id: 'b-din-gpo',   cat: 'gpo',    floor: 'GF',  room: 'Dining Booth',    title: 'Booth Under-Bench USB-C GPO',    note: 'Laptop/phone charging under seat', x: 19.65, y: gf + 0.45, z: Z_NW + 0.18 },
+                    { id: 'b-din-l',     cat: 'light',  floor: 'GF',  room: 'Dining Booth',    title: hasPendants ? 'Dining Feature Pendant' : '2× Dining LED Downlights', note: 'Centered over booth table', x: 19.62, y: gfC - 0.03, z: -3.38 },
+
+                    // --- MAIN LIVING / FAMILY (GF) ---
+                    { id: 'b-liv-tv',    cat: 'data',   floor: 'GF',  room: 'Living / Family', title: 'Quad GPO + TV + 2× Cat6 Data',   note: 'Behind 65" TV stand SE wall', x: 19.12, y: gf + 0.45, z: Z_SE - 0.18 },
+                    { id: 'b-liv-gpo2',  cat: 'gpo',    floor: 'GF',  room: 'Living / Family', title: 'Lounge Side Double GPO',         note: 'Floor/side lamp point', x: 17.55, y: gf + 0.35, z: 1.68 },
+                    { id: 'b-liv-sw',    cat: 'switch', floor: 'GF',  room: 'Living / Family', title: '4-Gang Living / Balcony Switch', note: 'Controls indoor + alfresco LEDs', x: 21.25, y: gf + 1.10, z: 1.80 },
+                    { id: 'b-liv-fan',   cat: 'fan',    floor: 'GF',  room: 'Living / Family', title: '1520mm Coastal DC Fan',          note: 'Reversible summer/winter', x: 19.12, y: gfC,       z: 2.35, radius: 0.74 },
+                    { id: 'b-liv-l',     cat: 'light',  floor: 'GF',  room: 'Living / Family', title: '4× Living LED Downlights',       note: `${SelectionsState.ledTemp} dimmable`, x: 19.12, y: gfC - 0.03, z: 1.35 },
+
+                    // --- ALFRESCO BALCONY (GF EXT) ---
+                    { id: 'b-balc-fan',  cat: 'fan',    floor: 'GF',  room: 'Alfresco Balcony',title: '1320mm Marine-Grade Fan',        note: '316 coastal corrosion rated', x: 22.72, y: gfC - 0.04, z: -0.15, radius: 0.64 },
+                    { id: 'b-balc-gpo',  cat: 'ext',    floor: 'GF',  room: 'Alfresco Balcony',title: 'Weatherproof Double GPO (BBQ)',  note: 'IP54 outdoor cover beside BBQ', x: 21.54, y: gf + 0.95, z: -2.22 },
+                    { id: 'b-balc-l',    cat: 'light',  floor: 'GF',  room: 'Alfresco Balcony',title: '2× Alfresco LED Downlights',     note: 'Warm 3000K bug-friendly', x: 22.72, y: gfC - 0.06, z: 1.35 },
+
+                    // --- ENTRY & GARAGE (GF) ---
+                    { id: 'b-ent-sw',    cat: 'switch', floor: 'GF',  room: 'Entry',           title: 'Entry / Porch / Sconce Switch',  note: 'Controls front portico + sconces', x: 9.58,  y: gf + 1.10, z: -0.68 },
+                    { id: 'b-gar-nbn',   cat: 'data',   floor: 'GF',  room: 'Garage',          title: 'NBN FTTP Box + Patch + GPO',     note: 'Comms hub on entry wall', x: 14.92, y: gar + 1.35, z: 1.55 },
+                    { id: 'b-gar-gpo',   cat: 'gpo',    floor: 'GF',  room: 'Garage',          title: 'Garage Double GPO (Bench)',      note: 'Plus ceiling GPO for B&D motor', x: 11.80, y: gar + 1.05, z: Z_SE - 0.18 },
+                    { id: 'b-gar-ev',    cat: 'ext',    floor: 'GF',  room: 'Garage',          title: hasEv ? '32A 3-Phase EV Wall Connector' : 'EV Charger Conduit Provision', note: hasEv ? 'Dedicated 32A RCBO circuit' : '25mm draw-wire conduit to board', x: 13.45, y: gar + 1.25, z: Z_SE - 0.18 },
+                    { id: 'b-gar-l',     cat: 'light',  floor: 'GF',  room: 'Garage',          title: '2× Linear LED Garage Battens',   note: 'Standard Batemans Bay inclusion', x: 11.80, y: gfC - 0.04, z: 2.60 },
+
+                    // --- LOWER GROUND: RUMPUS, BED 3, BED 4, BATH/LAUNDRY (LGF) ---
+                    { id: 'b-rmp-tv',    cat: 'data',   floor: 'LGF', room: 'Kids Rumpus',     title: 'Quad GPO + TV + Cat6 Data',      note: 'Lower media console NW wall', x: 19.48, y: lgf + 0.45, z: -1.64 },
+                    { id: 'b-rmp-sw',    cat: 'switch', floor: 'LGF', room: 'Kids Rumpus',     title: '3-Gang Rumpus / Stair 2-Way',    note: '2-way stairwell switching', x: 17.05, y: lgf + 1.10, z: 1.18 },
+                    { id: 'b-rmp-fan',   cat: 'fan',    floor: 'LGF', room: 'Kids Rumpus',     title: '1320mm Coastal DC Fan',          note: 'Centered in rumpus breakout', x: 19.48, y: lgfC,       z: -0.15, radius: 0.62 },
+                    { id: 'b-rmp-l',     cat: 'light',  floor: 'LGF', room: 'Kids Rumpus',     title: '4× Rumpus LED Downlights',       note: SelectionsState.ledTemp, x: 18.25, y: lgfC - 0.03, z: -0.15 },
+
+                    { id: 'b-b3-gpo1',   cat: 'gpo',    floor: 'LGF', room: 'Kids Bed 3',      title: 'Study Desk Double GPO + Data',   note: '850mm above desk', x: 19.85, y: lgf + 0.85, z: -1.86 },
+                    { id: 'b-b3-gpo2',   cat: 'gpo',    floor: 'LGF', room: 'Kids Bed 3',      title: 'Bunk Bedside Double GPO + USB',  note: '550mm AFFL', x: 18.42, y: lgf + 0.55, z: Z_NW + 0.18 },
+                    { id: 'b-b3-fan',    cat: 'fan',    floor: 'LGF', room: 'Kids Bed 3',      title: '1220mm Coastal DC Fan',          note: 'Clear of upper bunk rail', x: 19.20, y: lgfC,       z: -3.25, radius: 0.56 },
+
+                    { id: 'b-b4-gpo1',   cat: 'gpo',    floor: 'LGF', room: 'Kids Bed 4',      title: 'Study Desk Double GPO + Data',   note: '850mm above desk', x: 19.85, y: lgf + 0.85, z: 1.56 },
+                    { id: 'b-b4-gpo2',   cat: 'gpo',    floor: 'LGF', room: 'Kids Bed 4',      title: 'Bunk Bedside Double GPO + USB',  note: '550mm AFFL', x: 18.42, y: lgf + 0.55, z: Z_SE - 0.18 },
+                    { id: 'b-b4-fan',    cat: 'fan',    floor: 'LGF', room: 'Kids Bed 4',      title: '1220mm Coastal DC Fan',          note: 'Clear of upper bunk rail', x: 19.20, y: lgfC,       z: 2.95, radius: 0.56 },
+
+                    { id: 'b-bth-gpo1',  cat: 'gpo',    floor: 'LGF', room: 'Bath / Laundry',  title: 'Vanity Double GPO',              note: '1050mm AFFL beside mirror', x: 14.88, y: lgf + 1.05, z: -3.76 },
+                    { id: 'b-bth-gpo2',  cat: 'gpo',    floor: 'LGF', room: 'Bath / Laundry',  title: 'Washer / Dryer Double GPO',      note: 'Dedicated laundry circuit', x: 14.88, y: lgf + 1.05, z: -4.40 },
+                    { id: 'b-bth-sw',    cat: 'switch', floor: 'LGF', room: 'Bath / Laundry',  title: '3-Gang Light / IXL / Exhaust',   note: 'External wall vent', x: 16.68, y: lgf + 1.10, z: -2.05 },
+
+                    // --- EXTERIOR / SITE SERVICES ---
+                    { id: 'b-ext-ac',    cat: 'ext',    floor: 'LGF', room: 'Exterior SE',     title: hasDualAc ? 'Dual Daikin AC Isolators' : 'Daikin 5kW AC Isolator', note: 'Adjacent to outdoor condenser', x: 17.90, y: Y_PAD + 1.05, z: Z_SE + 0.24 },
+                    { id: 'b-ext-shwr',  cat: 'ext',    floor: 'LGF', room: 'Exterior Rear',   title: 'Outdoor Beach Shower / Tap',     note: 'Hot/cold mixer near D10/rear', x: 21.54, y: lgf + 1.10, z: -3.85 },
+                    { id: 'b-ext-ftap',  cat: 'ext',    floor: 'GF',  room: 'Exterior Front',  title: 'Front Garden Hose Tap',          note: 'SW Bed 1 front corner', x: 7.86,  y: gf - 0.15, z: -4.35 }
+                ];
+                return pts;
+            }
+
+            function getActiveElectricalPoints() {
+                const base = getBaselinePoints().filter(p => !ElecState.omittedIds.has(p.id));
+                return [...base, ...ElecState.customPoints];
+            }
+
+            // =========================================================================
+            // 38D. REBUILD 3D FANS, MARKER SPHERES & 2D PIN LABELS
+            // =========================================================================
+            function clearRenderedPins() {
+                ElecState.renderedNodes.forEach(n => n.labelEl?.remove());
+                ElecState.renderedNodes = [];
+                clearGroup(elecMarkersGroup);
+            }
+
+            function rebuildCeilingFans3D() {
+                clearGroup(ceilingFansGroup);
+                if (!ElecState.visible && !ElecState.keepFansVisible) return;
+                const active = getActiveElectricalPoints().filter(p => p.cat === 'fan');
+                active.forEach(f => {
+                    const fanMesh = buildCoastalCeilingFanMesh(f.x, f.y, f.z, f.radius || 0.62);
+                    ceilingFansGroup.add(fanMesh);
+                });
+            }
+
+            function rebuildElectricalOverlay() {
+                clearRenderedPins();
+                rebuildCeilingFans3D();
+                if (!ElecState.visible) {
+                    syncToolbarUI();
+                    return;
+                }
+
+                const pts = getActiveElectricalPoints();
+                pts.forEach(pt => {
+                    if (ElecState.filterCat !== 'all' && pt.cat !== ElecState.filterCat) return;
+                    if (ElecState.filterFloor !== 'all' && pt.floor !== ElecState.filterFloor) return;
+
+                    const catMeta = ELEC_CATS[pt.cat] || ELEC_CATS.gpo;
+                    const pos = new THREE.Vector3(pt.x, pt.y, pt.z);
+                    const dot = new THREE.Mesh(markerGeo, markerMats[pt.cat] || markerMats.gpo);
+                    dot.position.copy(pos);
+                    dot.renderOrder = 992;
+                    elecMarkersGroup.add(dot);
+
+                    const el = document.createElement('div');
+                    el.className = 'm38-pin';
+                    el.style.borderColor = catMeta.color;
+                    el.title = `${pt.room} (${pt.floor}) — ${pt.title}${pt.note ? ' • ' + pt.note : ''}`;
+                    el.innerHTML = `
+                        <span>${catMeta.icon}</span>
+                        <span>${pt.title}</span>
+                        <span class="m38-pin-del" title="Remove / Omit point">✕</span>
+                    `;
+                    el.querySelector('.m38-pin-del').addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (pt.id.startsWith('c-')) {
+                            ElecState.customPoints = ElecState.customPoints.filter(x => x.id !== pt.id);
+                        } else {
+                            ElecState.omittedIds.add(pt.id);
+                        }
+                        rebuildElectricalOverlay();
+                    });
+                    labelsLayer.appendChild(el);
+                    ElecState.renderedNodes.push({ item: pt, mesh: dot, labelEl: el, pos });
+                });
+
+                syncToolbarUI();
+                projectElectricalPins(true);
+            }
+
+            // =========================================================================
+            // 38E. CLICK-TO-PLACE CUSTOM ELECTRICAL POINTS ON ANY 3D SURFACE
+            // =========================================================================
+            const eRay = new THREE.Raycaster();
+            const ePtr = new THREE.Vector2();
+            let eDownX = 0, eDownY = 0;
+
+            function guessRoomName(p) {
+                if (p.y < Y_GF_FFL - 0.3) {
+                    if (p.x > X_REAR_WALL + 0.1 || p.z < Z_NW - 0.1 || p.z > Z_SE + 0.1) return 'Exterior Site';
+                    if (p.z < -1.75) return p.x < 16.8 ? 'Bath / Laundry' : 'Kids Bed 3';
+                    if (p.z > 1.45) return 'Kids Bed 4';
+                    return 'Kids Rumpus';
+                }
+                if (p.x > X_REAR_WALL + 0.1) return 'Alfresco Balcony';
+                if (p.x < X_FRONT_BED1 - 0.1 || p.z < Z_NW - 0.1 || p.z > Z_SE + 0.1) return 'Exterior Site';
+                if (p.x < 11.62 && p.z < Z_BED1_SE) return 'Master Bed 1';
+                if (p.x < 14.19 && p.z < Z_BED1_SE) return p.z < -2.55 ? 'Ensuite' : 'Walk-In Robe';
+                if (p.x < 15.05 && p.z >= Z_SPLIT) return 'Garage';
+                if (p.x < 17.6 && p.z < 0) return 'Kitchen';
+                if (p.z < 0) return 'Dining Booth';
+                return 'Living / Family';
+            }
+
+            renderer.domElement.addEventListener('pointerdown', (e) => {
+                if (!ElecState.visible || !ElecState.placeMode) return;
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                eDownX = e.clientX;
+                eDownY = e.clientY;
+            });
+
+            renderer.domElement.addEventListener('pointerup', (e) => {
+                if (!ElecState.visible || !ElecState.placeMode) return;
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                if (Math.hypot(e.clientX - eDownX, e.clientY - eDownY) > 7) return;
+
+                const rect = renderer.domElement.getBoundingClientRect();
+                ePtr.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                ePtr.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                eRay.setFromCamera(ePtr, camera);
+
+                const hits = eRay.intersectObjects([houseGroup], true);
+                let hitPt = null;
+                for (let i = 0; i < hits.length; i++) {
+                    const obj = hits[i].object;
+                    if (!obj.isMesh || !obj.visible) continue;
+                    let cur = obj, hidden = false;
+                    while (cur) { if (!cur.visible) { hidden = true; break; } cur = cur.parent; }
+                    if (hidden) continue;
+                    hitPt = hits[i].point.clone();
+                    break;
+                }
+                if (!hitPt) return;
+
+                const floor = hitPt.y >= Y_GF_FFL - 0.35 ? 'GF' : 'LGF';
+                const room = guessRoomName(hitPt);
+                const catMeta = ELEC_CATS[ElecState.placeCat] || ELEC_CATS.gpo;
+                const id = `c-${ElecState.nextCustomId++}`;
+
+                // Snap fans cleanly to ceiling elevation
+                let py = hitPt.y;
+                if (ElecState.placeCat === 'fan') py = floor === 'GF' ? getLiveGfCeilY() : Y_LGF_CEIL;
+
+                ElecState.customPoints.push({
+                    id,
+                    cat: ElecState.placeCat,
+                    floor,
+                    room,
+                    title: `Custom ${catMeta.label}`,
+                    note: `Placed in 3D (${Math.round((py - (floor === 'GF' ? Y_GF_FFL : Y_LGF_SSL)) * 1000)}mm AFFL)`,
+                    x: Number(hitPt.x.toFixed(3)),
+                    y: Number(py.toFixed(3)),
+                    z: Number(hitPt.z.toFixed(3))
+                });
+                rebuildElectricalOverlay();
+            });
+
+            // =========================================================================
+            // 38F. FAST 3D -> 2D PIN PROJECTION
+            // =========================================================================
+            const _eVec = new THREE.Vector3();
+            function isFullscreenOverlayActive() {
+                const cin = document.getElementById('cinema-overlay');
+                const mv = document.getElementById('multiview-grid-overlay');
+                return Boolean((cin && !cin.classList.contains('hidden')) || (mv && !mv.classList.contains('hidden')));
+            }
+
+            function projectElectricalPins(force = false) {
+                if (!ElecState.visible || ElecState.renderedNodes.length === 0 || isFullscreenOverlayActive()) {
+                    for (let i = 0; i < ElecState.renderedNodes.length; i++) {
+                        ElecState.renderedNodes[i].labelEl.style.display = 'none';
+                    }
+                    return;
+                }
+                const now = performance.now();
+                if (!force && (now - ElecState.lastProjTs < 28)) return;
+                ElecState.lastProjTs = now;
+
+                const W = window.innerWidth, H = window.innerHeight;
+                for (let i = 0; i < ElecState.renderedNodes.length; i++) {
+                    const n = ElecState.renderedNodes[i];
+                    _eVec.copy(n.pos).project(camera);
+                    if (_eVec.z < -1 || _eVec.z > 1) { n.labelEl.style.display = 'none'; continue; }
+                    const sx = (_eVec.x * 0.5 + 0.5) * W;
+                    const sy = (-_eVec.y * 0.5 + 0.5) * H;
+                    if (sx < -50 || sx > W + 50 || sy < 40 || sy > H - 40) {
+                        n.labelEl.style.display = 'none';
+                        continue;
+                    }
+                    n.labelEl.style.display = 'inline-flex';
+                    n.labelEl.style.transform = `translate3d(${sx.toFixed(1)}px, ${sy.toFixed(1)}px, 0) translate(-50%, -120%)`;
+                }
+            }
+
+            // =========================================================================
+            // 38G. FLOATING ELECTRICAL TOOLBAR + DESKTOP & MOBILE LAUNCH BUTTONS
+            // =========================================================================
+            const toolbar = document.createElement('div');
+            toolbar.id = 'm38-toolbar';
+            toolbar.className = 'hidden glass-panel rounded-2xl border border-amber-400/40 p-2.5 shadow-2xl space-y-2 text-xs';
+            toolbar.innerHTML = `
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                    <div class="flex items-center gap-1.5">
+                        <span>⚡</span>
+                        <span class="font-bold text-amber-300">Electrical Plan</span>
+                        <span id="m38-count-badge" class="font-mono text-[10.5px] text-slate-300">0 pts</span>
+                    </div>
+                    <div class="flex items-center gap-1 flex-wrap">
+                        <button id="m38-place-btn" class="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 border border-amber-400/40 text-[11px] font-bold transition">+ Place</button>
+                        <button id="m38-fans-keep-btn" class="px-2 py-1 rounded-lg bg-cyan-500/20 text-cyan-200 border border-cyan-400/35 text-[11px] font-bold transition" title="Keep 3D ceiling fans visible when overlay closes">Fans: On</button>
+                        <button id="m38-reset-btn" class="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-[11px] font-semibold transition" title="Restore omitted baseline points">Reset</button>
+                        <button id="m38-done-btn" class="px-2.5 py-1 rounded-lg bg-sky-400 text-slate-950 text-[11px] font-extrabold transition">Done</button>
+                    </div>
+                </div>
+
+                <!-- Category Filter & Floor Strip -->
+                <div class="flex items-center justify-between gap-1.5 flex-wrap">
+                    <div class="flex items-center gap-1 flex-wrap">
+                        <button class="m38-cat-btn m38-chip m38-on" data-cat="all">All</button>
+                        <button class="m38-cat-btn m38-chip" data-cat="gpo">🔌 GPO</button>
+                        <button class="m38-cat-btn m38-chip" data-cat="switch">🎛️ Sw</button>
+                        <button class="m38-cat-btn m38-chip" data-cat="light">💡 LED</button>
+                        <button class="m38-cat-btn m38-chip" data-cat="fan">🌀 Fan</button>
+                        <button class="m38-cat-btn m38-chip" data-cat="data">📡 TV</button>
+                        <button class="m38-cat-btn m38-chip" data-cat="ext">⚡ Ext</button>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <button class="m38-flr-btn m38-chip m38-on" data-flr="all">All</button>
+                        <button class="m38-flr-btn m38-chip" data-flr="GF">GF</button>
+                        <button class="m38-flr-btn m38-chip" data-flr="LGF">LGF</button>
+                    </div>
+                </div>
+
+                <!-- Place Point Selector (Shown only in + Place mode) -->
+                <div id="m38-place-bar" class="hidden pt-1.5 border-t border-white/10 flex items-center justify-between gap-2 flex-wrap">
+                    <span class="text-[11px] text-amber-200 font-semibold">Click any wall or ceiling to place:</span>
+                    <select id="m38-place-cat-sel" class="bg-slate-900 border border-amber-400/40 rounded-lg px-2 py-1 text-[11px] text-white font-semibold">
+                        <option value="gpo">🔌 Double GPO / USB-C</option>
+                        <option value="switch">🎛️ Light / Fan Switch</option>
+                        <option value="light">💡 LED Downlight</option>
+                        <option value="fan">🌀 Coastal Ceiling Fan</option>
+                        <option value="data">📡 TV / Data / NBN</option>
+                        <option value="ext">⚡ Dedicated / External Tap</option>
+                    </select>
+                </div>
+            `;
+            document.body.appendChild(toolbar);
+
+            // Desktop & Mobile Launch Buttons
+            const navExtSlot = document.getElementById('pro-nav-ext-slot');
+            const navElecBtn = document.createElement('button');
+            navElecBtn.id = 'nav-elec-btn';
+            navElecBtn.title = 'Electrical, GPO, Ceiling Fan & Lighting Plan Overlay (E)';
+            navElecBtn.textContent = '⚡ Elec';
+            if (navExtSlot) navExtSlot.appendChild(navElecBtn);
+
+            function injectMobileElectricalButton() {
+                const vSheetBody = document.querySelector('#m36m-sheet-views .m36m-sheet-body');
+                if (!vSheetBody || document.getElementById('m38-mob-elec-btn')) return;
+                const wrap = document.createElement('div');
+                wrap.className = 'space-y-1.5';
+                wrap.innerHTML = `
+                    <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Electrical & Services Plan</div>
+                    <button id="m38-mob-elec-btn" class="m36m-btn m36m-amber w-full">⚡ Electrical, GPOs & Fans</button>
+                `;
+                vSheetBody.insertBefore(wrap, vSheetBody.children[3] || vSheetBody.firstChild);
+                document.getElementById('m38-mob-elec-btn').addEventListener('click', () => {
+                    document.querySelector('#m36m-sheet-views .m36m-close')?.click();
+                    setElectricalVisible(!ElecState.visible);
+                });
+            }
+
+            function syncToolbarUI() {
+                toolbar.classList.toggle('hidden', !ElecState.visible || isFullscreenOverlayActive());
+                document.body.classList.toggle('m38-placing', ElecState.visible && ElecState.placeMode);
+
+                const cnt = document.getElementById('m38-count-badge');
+                if (cnt) cnt.textContent = `${ElecState.renderedNodes.length} shown`;
+
+                const pBtn = document.getElementById('m38-place-btn');
+                if (pBtn) {
+                    pBtn.textContent = ElecState.placeMode ? 'Placing: ON' : '+ Place';
+                    pBtn.className = ElecState.placeMode
+                        ? 'px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 text-[11px] font-extrabold transition'
+                        : 'px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/35 text-amber-200 border border-amber-400/40 text-[11px] font-bold transition';
+                }
+                document.getElementById('m38-place-bar')?.classList.toggle('hidden', !ElecState.placeMode);
+
+                const fBtn = document.getElementById('m38-fans-keep-btn');
+                if (fBtn) {
+                    fBtn.textContent = ElecState.keepFansVisible ? '3D Fans: On' : '3D Fans: Off';
+                    fBtn.className = ElecState.keepFansVisible
+                        ? 'px-2 py-1 rounded-lg bg-cyan-500/25 text-cyan-200 border border-cyan-400/40 text-[11px] font-bold transition'
+                        : 'px-2 py-1 rounded-lg bg-white/10 text-slate-400 text-[11px] font-semibold transition';
+                }
+
+                toolbar.querySelectorAll('.m38-cat-btn').forEach(b => b.classList.toggle('m38-on', b.dataset.cat === ElecState.filterCat));
+                toolbar.querySelectorAll('.m38-flr-btn').forEach(b => b.classList.toggle('m38-on', b.dataset.flr === ElecState.filterFloor));
+
+                if (navElecBtn) {
+                    navElecBtn.className = ElecState.visible
+                        ? 'px-2 py-1 rounded-lg bg-amber-400 text-slate-950 font-bold transition'
+                        : 'px-2 py-1 rounded-lg bg-white/10 text-slate-200 hover:text-white font-semibold transition';
+                }
+                document.getElementById('m38-mob-elec-btn')?.classList.toggle('m36m-on', ElecState.visible);
+            }
+
+            function setElectricalVisible(on) {
+                ElecState.visible = Boolean(on);
+                if (!ElecState.visible) ElecState.placeMode = false;
+                rebuildElectricalOverlay();
+            }
+
+            // Event Listeners
+            navElecBtn.addEventListener('click', () => setElectricalVisible(!ElecState.visible));
+            document.getElementById('m38-done-btn').addEventListener('click', () => setElectricalVisible(false));
+            document.getElementById('m38-place-btn').addEventListener('click', () => {
+                ElecState.placeMode = !ElecState.placeMode;
+                syncToolbarUI();
+            });
+            document.getElementById('m38-place-cat-sel').addEventListener('change', (e) => {
+                ElecState.placeCat = e.target.value;
+            });
+            document.getElementById('m38-fans-keep-btn').addEventListener('click', () => {
+                ElecState.keepFansVisible = !ElecState.keepFansVisible;
+                rebuildCeilingFans3D();
+                syncToolbarUI();
+            });
+            document.getElementById('m38-reset-btn').addEventListener('click', () => {
+                ElecState.omittedIds.clear();
+                ElecState.customPoints = [];
+                rebuildElectricalOverlay();
+            });
+            toolbar.querySelectorAll('.m38-cat-btn').forEach(b => {
+                b.addEventListener('click', () => { ElecState.filterCat = b.dataset.cat; rebuildElectricalOverlay(); });
+            });
+            toolbar.querySelectorAll('.m38-flr-btn').forEach(b => {
+                b.addEventListener('click', () => { ElecState.filterFloor = b.dataset.flr; rebuildElectricalOverlay(); });
+            });
+
+            window.addEventListener('keydown', (e) => {
+                const tag = document.activeElement?.tagName;
+                if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+                if (e.code === 'KeyE' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    setElectricalVisible(!ElecState.visible);
+                } else if (e.code === 'Escape' && ElecState.visible) {
+                    if (ElecState.placeMode) { ElecState.placeMode = false; syncToolbarUI(); }
+                    else setElectricalVisible(false);
+                }
+            });
+
+            window.addEventListener('click', (e) => {
+                if (e.target && e.target.closest('.int-ceil-h-btn, #cinema-tour-top-btn, #cinema-exit-btn, .nav-mv-btn, #mv-exit-btn')) {
+                    setTimeout(() => rebuildElectricalOverlay(), 40);
+                }
+            });
+            window.addEventListener('resize', () => projectElectricalPins(true));
+
+            // Expose Clean Schedule Reader for Module 39 (Unified Builder Pack PDF)
+            window.__m38GetElectricalSchedule = function() {
+                const points = getActiveElectricalPoints();
+                const counts = { gpo: 0, switch: 0, light: 0, fan: 0, data: 0, ext: 0 };
+                points.forEach(p => { if (counts[p.cat] !== undefined) counts[p.cat]++; });
+                return { points, counts, cats: ELEC_CATS };
+            };
+
+            // =========================================================================
+            // 38H. RENDER, LIFECYCLE & JSON SNAPSHOT HOOKS
+            // =========================================================================
+            const _prevRenderM38 = renderer.render.bind(renderer);
+            renderer.render = function(scn, cam) {
+                _prevRenderM38(scn, cam);
+                if (cam === camera) projectElectricalPins(false);
+            };
+
+            const _prevBuildM38 = buildHouse;
+            const _prevCaptureM38 = captureSpecSnapshot;
+            const _prevApplyM38 = applySpecSnapshot;
+            const _prevInitM38 = init;
+
+            buildHouse = function() {
+                _prevBuildM38();
+                rebuildCeilingFans3D();
+                if (ElecState.visible) rebuildElectricalOverlay();
+            };
+
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureM38();
+                snap.electricalPlan = {
+                    keepFansVisible: ElecState.keepFansVisible,
+                    omittedIds: Array.from(ElecState.omittedIds),
+                    customPoints: ElecState.customPoints
+                };
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                _prevApplyM38(snap, preserveQuotes);
+                if (snap && snap.electricalPlan) {
+                    const ep = snap.electricalPlan;
+                    if (ep.keepFansVisible !== undefined) ElecState.keepFansVisible = Boolean(ep.keepFansVisible);
+                    ElecState.omittedIds = new Set(Array.isArray(ep.omittedIds) ? ep.omittedIds : []);
+                    ElecState.customPoints = Array.isArray(ep.customPoints) ? ep.customPoints : [];
+                }
+                rebuildElectricalOverlay();
+            };
+
+            init = function() {
+                _prevInitM38();
+                injectMobileElectricalButton();
+                rebuildCeilingFans3D();
+                syncToolbarUI();
+            };
+        })();
+
+// =========================================================================
+        // 39. DROP-IN MODULE: UNIFIED PRINTABLE BUILDER PACK PDF
+        //     Combines Live 3D Snapshot, Upgrade Budget, Material Selections,
+        //     Window/Door Schedule, Electrical Plan, Measurements & Builder Qs
+        // Paste below Module 38 and immediately above `window.onload = () => {`
+        // =========================================================================
+        (function initUnifiedBuilderPackPdfPlugin() {
+            const PackState = {
+                open: false,
+                upgradesOnly: false,
+                includeSections: { cover: true, selections: true, windows: true, electrical: true, notes: true },
+                snapshotDataUrl: '',
+                questions: [
+                    { id: 'q1', done: false, text: 'D07 (Rear Balcony): Confirm 3600w FSSF bi-part slide direction & flush sill drainage detail.' },
+                    { id: 'q2', done: false, text: 'D10 (Lower Bath/Laundry): Confirm integrated glass door blind vs adjacent narrow awning window.' },
+                    { id: 'q3', done: false, text: 'Coastal Durability: Confirm Colorbond Ultra & 316 marine-grade balustrade distance threshold for Lilli Pilli.' },
+                    { id: 'q4', done: false, text: 'Driveway & Site Cut: Confirm exact m² over standard 45m² broom concrete allowance & retaining wall finish.' }
+                ],
+                nextQId: 5
+            };
+
+            // =========================================================================
+            // 39A. SCREEN & MULTI-PAGE PRINT / SAVE-AS-PDF STYLESHEET
+            // =========================================================================
+            const m39Style = document.createElement('style');
+            m39Style.id = 'm39-builder-pack-css';
+            m39Style.textContent = `
+                #m39-pack-modal {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 95;
+                    background: rgba(2, 6, 23, 0.82);
+                    backdrop-filter: blur(8px);
+                    display: none;
+                    flex-direction: column;
+                    align-items: center;
+                    padding: 12px;
+                    overflow-y: auto;
+                    -webkit-overflow-scrolling: touch;
+                }
+                #m39-pack-modal.m39-open { display: flex; }
+
+                #m39-pack-sheet {
+                    width: 100%;
+                    max-width: 980px;
+                    background: #ffffff;
+                    color: #0f172a;
+                    border-radius: 18px;
+                    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+                    overflow: hidden;
+                    margin-bottom: 24px;
+                }
+                .m39-doc-body {
+                    padding: 24px 28px 32px;
+                    font-size: 12px;
+                    line-height: 1.45;
+                }
+                @media (max-width: 640px) {
+                    #m39-pack-modal { padding: 0; }
+                    #m39-pack-sheet { border-radius: 0; margin-bottom: 0; }
+                    .m39-doc-body { padding: 14px 14px 28px; font-size: 11.5px; }
+                }
+                .m39-sec-title {
+                    font-size: 14px;
+                    font-weight: 800;
+                    color: #0f172a;
+                    text-transform: uppercase;
+                    letter-spacing: 0.04em;
+                    border-bottom: 2px solid #0284c7;
+                    padding-bottom: 5px;
+                    margin: 22px 0 10px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: baseline;
+                }
+                .m39-tbl {
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 11px;
+                }
+                .m39-tbl th {
+                    background: #f1f5f9;
+                    color: #334155;
+                    text-align: left;
+                    font-size: 10px;
+                    text-transform: uppercase;
+                    letter-spacing: 0.04em;
+                    padding: 6px 8px;
+                    border: 1px solid #cbd5e1;
+                }
+                .m39-tbl td {
+                    padding: 5px 8px;
+                    border: 1px solid #e2e8f0;
+                    vertical-align: top;
+                    color: #1e293b;
+                }
+                .m39-tbl tr.m39-trade-row td {
+                    background: #e0f2fe;
+                    color: #0369a1;
+                    font-weight: 800;
+                    font-size: 10px;
+                    text-transform: uppercase;
+                    letter-spacing: 0.05em;
+                }
+                .m39-badge-std {
+                    display: inline-block;
+                    padding: 1px 6px;
+                    border-radius: 4px;
+                    background: #dcfce7;
+                    color: #166534;
+                    font-weight: 700;
+                    font-size: 9.5px;
+                }
+                .m39-badge-upg {
+                    display: inline-block;
+                    padding: 1px 6px;
+                    border-radius: 4px;
+                    background: #fef3c7;
+                    color: #92400e;
+                    font-weight: 700;
+                    font-size: 9.5px;
+                }
+                .m39-badge-q {
+                    display: inline-block;
+                    padding: 1px 6px;
+                    border-radius: 4px;
+                    background: #e0f2fe;
+                    color: #075985;
+                    font-weight: 700;
+                    font-size: 9.5px;
+                }
+                .m39-kpi-grid {
+                    display: grid;
+                    grid-template-columns: repeat(4, minmax(0, 1fr));
+                    gap: 10px;
+                    margin: 12px 0;
+                }
+                @media (max-width: 640px) {
+                    .m39-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+                }
+                .m39-kpi-box {
+                    border: 1px solid #cbd5e1;
+                    border-radius: 10px;
+                    padding: 9px 11px;
+                    background: #f8fafc;
+                }
+
+                /* Multi-Page Clean PDF Print Overrides */
+                @media print {
+                    html.m39-printing,
+                    body.printing-builder-pack {
+                        height: auto !important;
+                        overflow: visible !important;
+                        background: #ffffff !important;
+                    }
+                    body.printing-builder-pack * { visibility: hidden !important; }
+                    body.printing-builder-pack #m39-pack-modal,
+                    body.printing-builder-pack #m39-pack-modal * {
+                        visibility: visible !important;
+                    }
+                    body.printing-builder-pack #m39-pack-modal {
+                        position: static !important;
+                        inset: auto !important;
+                        display: block !important;
+                        background: #ffffff !important;
+                        padding: 0 !important;
+                        overflow: visible !important;
+                        backdrop-filter: none !important;
+                    }
+                    body.printing-builder-pack #m39-pack-sheet {
+                        max-width: 100% !important;
+                        box-shadow: none !important;
+                        border-radius: 0 !important;
+                        margin: 0 !important;
+                        overflow: visible !important;
+                    }
+                    body.printing-builder-pack .m39-doc-body { padding: 6mm 8mm !important; }
+                    body.printing-builder-pack .m39-no-print { display: none !important; }
+                    body.printing-builder-pack .m39-page-break {
+                        break-before: page;
+                        page-break-before: always;
+                    }
+                    body.printing-builder-pack tr,
+                    body.printing-builder-pack .m39-kpi-box,
+                    body.printing-builder-pack .m39-q-row {
+                        break-inside: avoid;
+                        page-break-inside: avoid;
+                    }
+                    * {
+                        -webkit-print-color-adjust: exact !important;
+                        print-color-adjust: exact !important;
+                    }
+                }
+            `;
+            document.head.appendChild(m39Style);
+
+            // =========================================================================
+            // 39B. MODAL SHELL & HEADER LAUNCH BUTTONS
+            // =========================================================================
+            const modal = document.createElement('div');
+            modal.id = 'm39-pack-modal';
+            modal.innerHTML = `
+                <div id="m39-pack-sheet">
+                    <!-- Sticky Screen Action Bar (Hidden in Print/PDF) -->
+                    <div class="m39-no-print sticky top-0 z-20 bg-slate-900 text-white px-4 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-700">
+                        <div class="flex items-center gap-2">
+                            <span class="text-base">📄</span>
+                            <div>
+                                <div class="text-sm font-extrabold leading-tight">Unified Builder Pre-Start Pack</div>
+                                <div class="text-[11px] text-slate-400">Print or Save as PDF (A4 Portrait / Landscape)</div>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <button id="m39-snap-btn" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-sky-300">📷 Re-Capture 3D</button>
+                            <button id="m39-upg-toggle" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-amber-300">All Selections</button>
+                            <button id="m39-print-btn" class="px-3.5 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-extrabold">🖨️ Print / Save PDF</button>
+                            <button id="m39-close-btn" class="px-3 py-1.5 rounded-lg bg-rose-500/25 hover:bg-rose-500/40 text-rose-200 text-xs font-bold">Close</button>
+                        </div>
+                    </div>
+
+                    <!-- Section Include Checkboxes (Screen Only) -->
+                    <div class="m39-no-print bg-slate-100 border-b border-slate-300 px-4 py-2 flex flex-wrap items-center gap-3 text-xs text-slate-700 font-semibold">
+                        <span class="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Include:</span>
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="m39-sec-chk accent-sky-600" data-sec="cover" checked> Cover & 3D View</label>
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="m39-sec-chk accent-sky-600" data-sec="selections" checked> Selections & Budget</label>
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="m39-sec-chk accent-sky-600" data-sec="windows" checked> Window Schedule</label>
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="m39-sec-chk accent-sky-600" data-sec="electrical" checked> Electrical & Fans</label>
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="m39-sec-chk accent-sky-600" data-sec="notes" checked> Measurements & Qs</label>
+                    </div>
+
+                    <!-- Printable A4 Document Body -->
+                    <div id="m39-doc-body" class="m39-doc-body"></div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            // Inject Desktop Header Button right next to Selections
+            const selBtn = document.getElementById('open-selections-btn');
+            if (selBtn && !document.getElementById('open-builder-pack-btn')) {
+                const packBtn = document.createElement('button');
+                packBtn.id = 'open-builder-pack-btn';
+                packBtn.className = 'glass-panel px-3 py-2 rounded-xl text-xs font-semibold text-emerald-300 hover:text-white hover:bg-emerald-500/25 border border-emerald-400/35 transition flex items-center gap-1.5';
+                packBtn.title = 'Open Unified Printable Builder Pack (PDF)';
+                packBtn.innerHTML = '<span>📄 Builder Pack</span>';
+                selBtn.parentElement.insertBefore(packBtn, selBtn.nextSibling);
+                packBtn.addEventListener('click', openBuilderPack);
+            }
+
+            // Inject Mobile Launch Button inside Module 36B Price & Solar sheet
+            function injectMobilePackButton() {
+                const pricePanel = document.getElementById('m36m-panel-price');
+                if (!pricePanel || document.getElementById('m39-mob-pack-btn')) return;
+                const btn = document.createElement('button');
+                btn.id = 'm39-mob-pack-btn';
+                btn.className = 'm36m-btn m36m-emerald w-full';
+                btn.textContent = '📄 Printable Builder Pack (PDF)';
+                pricePanel.insertBefore(btn, pricePanel.firstChild);
+                btn.addEventListener('click', () => {
+                    document.querySelector('#m36m-sheet-more .m36m-close')?.click();
+                    openBuilderPack();
+                });
+            }
+
+            // =========================================================================
+            // 39C. SNAPSHOT CAPTURE & DOCUMENT RENDERER
+            // =========================================================================
+            function capture3DCanvasSnapshot() {
+                try {
+                    // Explicit render right before toDataURL avoids blank WebGL canvas buffers
+                    renderer.render(scene, camera);
+                    PackState.snapshotDataUrl = renderer.domElement.toDataURL('image/jpeg', 0.86);
+                } catch (err) {
+                    console.warn('3D snapshot capture skipped:', err);
+                    PackState.snapshotDataUrl = '';
+                }
+            }
+
+            function escHtml(str) {
+                return String(str ?? '')
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }
+
+            function renderBuilderPackDocument() {
+                const body = document.getElementById('m39-doc-body');
+                if (!body) return;
+
+                const rev = typeof currentRevision !== 'undefined' ? currentRevision : 4;
+                const revNames = {
+                    1: 'Rev 1 — Culburra 235 Mod. (Clad Upper / Brick Lower)',
+                    2: 'Rev 2 — Full Brick Lower & Upper + Flat Balcony Roof',
+                    3: 'Rev 3 — Traditional 22.5° Hip Roof (RL 102.875)',
+                    4: 'Rev 4 — Simplified 22.5° Front Hip + Single Entry Pillar'
+                };
+                const ceilH = document.querySelector('.int-ceil-h-btn.active-std, .int-ceil-h-btn.active-upg')?.dataset?.h || '2.40';
+                const todayStr = new Date().toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
+
+                const catalog = typeof getSelectionsCatalog === 'function' ? getSelectionsCatalog() : [];
+                const activeUpgrades = catalog.filter(r => r.status === 'UPGRADE' && r.costKey);
+                let upgTotal = 0;
+                activeUpgrades.forEach(r => { upgTotal += Number(SelectionsState.upgradeQuotes[r.costKey]) || 0; });
+                const cap = Number(SelectionsState.budgetCap) || 0;
+                const rem = cap - upgTotal;
+                const fmtMoney = (n) => typeof formatAUD === 'function' ? formatAUD(n) : ('$' + Math.round(n).toLocaleString('en-AU'));
+
+                let html = '';
+                let hasPrevPage = false;
+
+                // ---------------- SECTION 1: COVER, 3D RENDER & BUDGET KPIs ----------------
+                if (PackState.includeSections.cover) {
+                    hasPrevPage = true;
+                    html += `
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:3px solid #0f172a;padding-bottom:12px;">
+                            <div>
+                                <div style="font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#0284c7;">Pre-Start Construction Specification Pack</div>
+                                <h1 style="font-size:21px;font-weight:800;margin:2px 0 4px;color:#0f172a;">328 George Bass Drive, Lilli Pilli NSW 2536</h1>
+                                <div style="font-size:11.5px;color:#475569;">Lot 4 DP239662 (16.765m × 39.625m) • Eurobodalla Shire • BAL 12.5 • G.J. Gardner Batemans Bay Baseline</div>
+                            </div>
+                            <div style="text-align:right;font-size:11px;color:#334155;white-space:nowrap;">
+                                <div style="font-weight:800;color:#0f172a;">Generated: ${escHtml(todayStr)}</div>
+                                <div>Active Plan: <strong>Rev ${rev}</strong></div>
+                                <div>GF Ceiling: <strong>${escHtml(ceilH)} m</strong> • FFL RL 98.135</div>
+                            </div>
+                        </div>
+
+                        <div class="m39-kpi-grid">
+                            <div class="m39-kpi-box">
+                                <div style="font-size:9.5px;text-transform:uppercase;color:#64748b;font-weight:700;">Active Architecture</div>
+                                <div style="font-size:12.5px;font-weight:800;color:#0f172a;margin-top:2px;">Rev ${rev}</div>
+                                <div style="font-size:10px;color:#475569;">${escHtml(revNames[rev] || '')}</div>
+                            </div>
+                            <div class="m39-kpi-box">
+                                <div style="font-size:9.5px;text-transform:uppercase;color:#64748b;font-weight:700;">Upgrade Budget Cap</div>
+                                <div style="font-size:16px;font-weight:800;color:#0f172a;font-family:monospace;margin-top:2px;">${fmtMoney(cap)}</div>
+                                <div style="font-size:10px;color:#475569;">AUD Target Allowance</div>
+                            </div>
+                            <div class="m39-kpi-box">
+                                <div style="font-size:9.5px;text-transform:uppercase;color:#64748b;font-weight:700;">Active Upgrades (${activeUpgrades.length})</div>
+                                <div style="font-size:16px;font-weight:800;color:#b45309;font-family:monospace;margin-top:2px;">${fmtMoney(upgTotal)}</div>
+                                <div style="font-size:10px;color:#475569;">${cap > 0 ? Math.round((upgTotal / cap) * 100) : 0}% of allowance</div>
+                            </div>
+                            <div class="m39-kpi-box">
+                                <div style="font-size:9.5px;text-transform:uppercase;color:#64748b;font-weight:700;">Remaining Allowance</div>
+                                <div style="font-size:16px;font-weight:800;color:${rem < 0 ? '#be123c' : '#15803d'};font-family:monospace;margin-top:2px;">${rem < 0 ? '-' + fmtMoney(Math.abs(rem)) : fmtMoney(rem)}</div>
+                                <div style="font-size:10px;color:#475569;">${rem < 0 ? 'Over budget cap' : 'Within target budget'}</div>
+                            </div>
+                        </div>
+
+                        ${PackState.snapshotDataUrl ? `
+                            <div style="margin-top:12px;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;background:#0f172a;">
+                                <img src="${PackState.snapshotDataUrl}" alt="3D Elevation View" style="width:100%;max-height:310px;object-fit:cover;display:block;">
+                                <div style="padding:6px 10px;background:#f8fafc;color:#475569;font-size:10px;display:flex;justify-content:space-between;">
+                                    <span>3D Model Elevation Snapshot — ${escHtml(revNames[rev] || ('Rev ' + rev))}</span>
+                                    <span>Roof: ${escHtml(SelectionsState.roofColor)} • Brick: ${escHtml(currentBrickPreset?.name || '')} • Trim: ${escHtml(SelectionsState.trimColor)}</span>
+                                </div>
+                            </div>
+                        ` : ''}
+                    `;
+                }
+
+                // ---------------- SECTION 2: SELECTIONS & UPGRADE BUDGET ----------------
+                if (PackState.includeSections.selections) {
+                    const rows = PackState.upgradesOnly ? catalog.filter(r => r.status !== 'STD') : catalog;
+                    let lastTrade = '';
+                    const rowsHtml = rows.map(r => {
+                        const th = r.trade !== lastTrade
+                            ? `<tr class="m39-trade-row"><td colspan="5">${escHtml(r.trade)}</td></tr>`
+                            : '';
+                        lastTrade = r.trade;
+                        const badge = r.status === 'UPGRADE'
+                            ? '<span class="m39-badge-upg">UPGRADE</span>'
+                            : r.status === 'QUESTION'
+                                ? '<span class="m39-badge-q">BUILDER Q</span>'
+                                : '<span class="m39-badge-std">STD</span>';
+                        const costTxt = r.costKey ? fmtMoney(SelectionsState.upgradeQuotes[r.costKey] ?? 0) : 'Incl.';
+                        return `${th}
+                            <tr>
+                                <td style="font-weight:700;width:21%;">${escHtml(r.item)}</td>
+                                <td style="width:32%;">${escHtml(r.selection)}</td>
+                                <td style="width:10%;text-align:center;">${badge}</td>
+                                <td style="width:11%;text-align:right;font-family:monospace;font-weight:700;">${costTxt}</td>
+                                <td style="width:26%;color:#475569;">${escHtml(r.notes || '—')}</td>
+                            </tr>`;
+                    }).join('');
+
+                    html += `
+                        <div class="${hasPrevPage ? 'm39-page-break' : ''}">
+                            <div class="m39-sec-title">
+                                <span>1. Selections & Upgrade Schedule</span>
+                                <span style="font-size:11px;font-weight:600;color:#475569;">${PackState.upgradesOnly ? 'Upgrades & Questions Only' : 'Complete Specification'} • Total: ${fmtMoney(upgTotal)}</span>
+                            </div>
+                            <table class="m39-tbl">
+                                <thead>
+                                    <tr>
+                                        <th>Item</th><th>Selected Finish / Spec</th><th style="text-align:center;">Status</th><th style="text-align:right;">Est. AUD</th><th>Contract / Pre-Start Notes</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rowsHtml}</tbody>
+                            </table>
+                        </div>
+                    `;
+                    hasPrevPage = true;
+                }
+
+                // ---------------- SECTION 3: WINDOW & DOOR SCHEDULE ----------------
+                if (PackState.includeSections.windows) {
+                    const wRows = typeof getOrderedScheduleRows === 'function' ? getOrderedScheduleRows() : [];
+                    html += `
+                        <div class="${hasPrevPage ? 'm39-page-break' : ''}">
+                            <div class="m39-sec-title">
+                                <span>2. Builder Window & Door Schedule</span>
+                                <span style="font-size:11px;font-weight:600;color:#475569;">${SelectionsState.glazingSpec === 'double' ? 'Double Glazed' : 'Single Glazed (STD)'} • Frame: ${escHtml(SelectionsState.trimColor)} • All dims mm</span>
+                            </div>
+                            <table class="m39-tbl">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th><th>Room / Elevation</th><th style="text-align:right;">H (mm)</th><th style="text-align:right;">W (mm)</th><th style="text-align:right;">Head</th><th style="text-align:right;">Sill</th><th>Config</th><th>Coverings & Notes</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${wRows.map(r => `
+                                        <tr>
+                                            <td style="font-family:monospace;font-weight:800;color:#0369a1;">${escHtml(r.id)}</td>
+                                            <td style="font-weight:600;">${escHtml(r.room)}</td>
+                                            <td style="text-align:right;font-family:monospace;">${r.height}</td>
+                                            <td style="text-align:right;font-family:monospace;">${r.width}</td>
+                                            <td style="text-align:right;font-family:monospace;">${r.head}</td>
+                                            <td style="text-align:right;font-family:monospace;font-weight:700;">${r.sill}</td>
+                                            <td style="font-family:monospace;font-weight:700;">${escHtml(r.configCode)}</td>
+                                            <td style="color:#475569;">${escHtml(r.notes || '—')}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                    hasPrevPage = true;
+                }
+
+                // ---------------- SECTION 4: ELECTRICAL, LIGHTING & CEILING FANS ----------------
+                if (PackState.includeSections.electrical && typeof window.__m38GetElectricalSchedule === 'function') {
+                    const elec = window.__m38GetElectricalSchedule();
+                    const grouped = new Map();
+                    elec.points.forEach(p => {
+                        const key = `${p.floor} — ${p.room}`;
+                        if (!grouped.has(key)) grouped.set(key, []);
+                        grouped.get(key).push(p);
+                    });
+
+                    let eRowsHtml = '';
+                    grouped.forEach((items, roomKey) => {
+                        eRowsHtml += `<tr class="m39-trade-row"><td colspan="4">${escHtml(roomKey)}</td></tr>`;
+                        items.forEach(pt => {
+                            const cm = elec.cats[pt.cat] || { label: pt.cat };
+                            eRowsHtml += `
+                                <tr>
+                                    <td style="width:15%;font-weight:700;">${escHtml(cm.label)}</td>
+                                    <td style="width:36%;font-weight:600;">${escHtml(pt.title)}</td>
+                                    <td style="width:35%;color:#475569;">${escHtml(pt.note || '—')}</td>
+                                    <td style="width:14%;font-family:monospace;color:#64748b;text-align:right;">${pt.id.startsWith('c-') ? 'Custom 3D' : 'Plan Base'}</td>
+                                </tr>`;
+                        });
+                    });
+
+                    html += `
+                        <div class="${hasPrevPage ? 'm39-page-break' : ''}">
+                            <div class="m39-sec-title">
+                                <span>3. Electrical, GPO, Ceiling Fan & Lighting Plan</span>
+                                <span style="font-size:11px;font-weight:600;color:#475569;">LED Temp: ${escHtml(SelectionsState.ledTemp)} • ${elec.points.length} Total Points</span>
+                            </div>
+                            <div class="m39-kpi-grid" style="grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;">
+                                <div class="m39-kpi-box" style="text-align:center;padding:6px;"><div style="font-size:9px;color:#64748b;font-weight:700;">GPOs</div><div style="font-size:15px;font-weight:800;">${elec.counts.gpo}</div></div>
+                                <div class="m39-kpi-box" style="text-align:center;padding:6px;"><div style="font-size:9px;color:#64748b;font-weight:700;">Switches</div><div style="font-size:15px;font-weight:800;">${elec.counts.switch}</div></div>
+                                <div class="m39-kpi-box" style="text-align:center;padding:6px;"><div style="font-size:9px;color:#64748b;font-weight:700;">Light Zones</div><div style="font-size:15px;font-weight:800;">${elec.counts.light}</div></div>
+                                <div class="m39-kpi-box" style="text-align:center;padding:6px;"><div style="font-size:9px;color:#64748b;font-weight:700;">Ceiling Fans</div><div style="font-size:15px;font-weight:800;">${elec.counts.fan}</div></div>
+                                <div class="m39-kpi-box" style="text-align:center;padding:6px;"><div style="font-size:9px;color:#64748b;font-weight:700;">TV / Data</div><div style="font-size:15px;font-weight:800;">${elec.counts.data}</div></div>
+                                <div class="m39-kpi-box" style="text-align:center;padding:6px;"><div style="font-size:9px;color:#64748b;font-weight:700;">Ext / Ded</div><div style="font-size:15px;font-weight:800;">${elec.counts.ext}</div></div>
+                            </div>
+                            <table class="m39-tbl">
+                                <thead>
+                                    <tr><th>Type</th><th>Fixture / Outlet</th><th>Placement & Builder Notes</th><th style="text-align:right;">Source</th></tr>
+                                </thead>
+                                <tbody>${eRowsHtml}</tbody>
+                            </table>
+                        </div>
+                    `;
+                    hasPrevPage = true;
+                }
+
+                // ---------------- SECTION 5: MEASUREMENTS & PRE-START BUILDER QUESTIONS ----------------
+                if (PackState.includeSections.notes) {
+                    let savedMeas = [];
+                    try {
+                        const snap = captureSpecSnapshot();
+                        if (Array.isArray(snap.measurements)) savedMeas = snap.measurements;
+                    } catch {}
+
+                    const measHtml = savedMeas.length > 0
+                        ? `
+                            <table class="m39-tbl" style="margin-bottom:14px;">
+                                <thead>
+                                    <tr><th>#</th><th>Point A (X, Y, Z m)</th><th>Point B (X, Y, Z m)</th><th style="text-align:right;">Distance</th></tr>
+                                </thead>
+                                <tbody>
+                                    ${savedMeas.map((m, idx) => {
+                                        const d = Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1], m.b[2] - m.a[2]);
+                                        return `<tr>
+                                            <td style="font-family:monospace;font-weight:700;">M${idx + 1}</td>
+                                            <td style="font-family:monospace;">(${m.a.join(', ')})</td>
+                                            <td style="font-family:monospace;">(${m.b.join(', ')})</td>
+                                            <td style="text-align:right;font-family:monospace;font-weight:800;">${Math.round(d * 1000).toLocaleString('en-AU')} mm (${d.toFixed(2)} m)</td>
+                                        </tr>`;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        `
+                        : `<div style="font-size:11px;color:#64748b;margin-bottom:12px;">No custom 3D tape measurements saved. Use <strong>📏 Measure (R)</strong> to capture dimensions for this sheet.</div>`;
+
+                    const qHtml = PackState.questions.map((q, idx) => `
+                        <div class="m39-q-row" style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:7px 9px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;background:${q.done ? '#f0fdf4' : '#ffffff'};">
+                            <label style="display:flex;align-items:flex-start;gap:8px;flex:1;cursor:pointer;">
+                                <input type="checkbox" class="m39-q-chk" data-qid="${q.id}" ${q.done ? 'checked' : ''} style="margin-top:2px;">
+                                <span style="${q.done ? 'text-decoration:line-through;color:#64748b;' : 'color:#0f172a;font-weight:600;'}"><strong>Q${idx + 1}.</strong> ${escHtml(q.text)}</span>
+                            </label>
+                            <button class="m39-no-print m39-q-del" data-qid="${q.id}" style="color:#e11d48;font-weight:800;font-size:11px;padding:0 4px;">✕</button>
+                        </div>
+                    `).join('');
+
+                    html += `
+                        <div class="${hasPrevPage ? 'm39-page-break' : ''}">
+                            <div class="m39-sec-title">
+                                <span>4. Custom 3D Measurements & Builder Pre-Start Questions</span>
+                                <span style="font-size:11px;font-weight:600;color:#475569;">${PackState.questions.filter(q => !q.done).length} Open Items</span>
+                            </div>
+                            <div style="font-size:11px;font-weight:800;color:#334155;margin-bottom:6px;">Saved 3D Tape Measurements</div>
+                            ${measHtml}
+
+                            <div style="font-size:11px;font-weight:800;color:#334155;margin:10px 0 6px;">Pre-Start Builder Questions & Clarifications</div>
+                            <div>${qHtml}</div>
+
+                            <div class="m39-no-print" style="display:flex;gap:8px;margin-top:10px;">
+                                <input id="m39-new-q-input" type="text" placeholder="Add a question or note for G.J. Gardner pre-start..." style="flex:1;border:1px solid #cbd5e1;border-radius:8px;padding:7px 10px;font-size:12px;color:#0f172a;">
+                                <button id="m39-add-q-btn" style="background:#0284c7;color:#ffffff;font-weight:700;font-size:12px;padding:7px 14px;border-radius:8px;">+ Add</button>
+                            </div>
+
+                            <div style="margin-top:24px;padding-top:12px;border-top:1px solid #cbd5e1;display:grid;grid-template-columns:1fr 1fr;gap:24px;font-size:10.5px;color:#64748b;">
+                                <div>Client Sign-Off: ____________________________________ &nbsp;&nbsp; Date: ____/____/2026</div>
+                                <div>Builder / Colour Consultant: ___________________________ &nbsp;&nbsp; Date: ____/____/2026</div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                body.innerHTML = html;
+
+                // Bind Question Checkboxes, Delete & Add
+                body.querySelectorAll('.m39-q-chk').forEach(chk => {
+                    chk.addEventListener('change', (e) => {
+                        const q = PackState.questions.find(x => x.id === e.target.dataset.qid);
+                        if (q) q.done = e.target.checked;
+                        renderBuilderPackDocument();
+                    });
+                });
+                body.querySelectorAll('.m39-q-del').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        PackState.questions = PackState.questions.filter(x => x.id !== btn.dataset.qid);
+                        renderBuilderPackDocument();
+                    });
+                });
+                const addQ = () => {
+                    const inp = document.getElementById('m39-new-q-input');
+                    const txt = (inp?.value || '').trim();
+                    if (!txt) return;
+                    PackState.questions.push({ id: `q${PackState.nextQId++}`, done: false, text: txt });
+                    renderBuilderPackDocument();
+                };
+                document.getElementById('m39-add-q-btn')?.addEventListener('click', addQ);
+                document.getElementById('m39-new-q-input')?.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') addQ();
+                });
+
+                const upgBtn = document.getElementById('m39-upg-toggle');
+                if (upgBtn) upgBtn.textContent = PackState.upgradesOnly ? 'Upgrades Only' : 'All Selections';
+            }
+
+            // =========================================================================
+            // 39D. OPEN / CLOSE / PRINT HANDLERS & JSON PERSISTENCE
+            // =========================================================================
+            function openBuilderPack() {
+                capture3DCanvasSnapshot();
+                PackState.open = true;
+                modal.classList.add('m39-open');
+                renderBuilderPackDocument();
+            }
+
+            function closeBuilderPack() {
+                PackState.open = false;
+                modal.classList.remove('m39-open');
+            }
+
+            function printBuilderPackPDF() {
+                document.body.classList.remove('printing-windows', 'printing-selections');
+                document.documentElement.classList.add('m39-printing');
+                document.body.classList.add('printing-builder-pack');
+
+                const cleanup = () => {
+                    document.documentElement.classList.remove('m39-printing');
+                    document.body.classList.remove('printing-builder-pack');
+                    window.removeEventListener('afterprint', cleanup);
+                };
+                window.addEventListener('afterprint', cleanup);
+                window.print();
+                // Safety fallback for mobile browsers that don't fire afterprint
+                setTimeout(cleanup, 1200);
+            }
+
+            document.getElementById('m39-close-btn').addEventListener('click', closeBuilderPack);
+            document.getElementById('m39-print-btn').addEventListener('click', printBuilderPackPDF);
+            document.getElementById('m39-snap-btn').addEventListener('click', () => {
+                capture3DCanvasSnapshot();
+                renderBuilderPackDocument();
+            });
+            document.getElementById('m39-upg-toggle').addEventListener('click', () => {
+                PackState.upgradesOnly = !PackState.upgradesOnly;
+                renderBuilderPackDocument();
+            });
+            modal.querySelectorAll('.m39-sec-chk').forEach(chk => {
+                chk.addEventListener('change', (e) => {
+                    PackState.includeSections[e.target.dataset.sec] = e.target.checked;
+                    renderBuilderPackDocument();
+                });
+            });
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) closeBuilderPack();
+            });
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Escape' && PackState.open) closeBuilderPack();
+            });
+
+            // JSON Snapshot Persistence for Pre-Start Questions
+            const _prevCaptureM39 = captureSpecSnapshot;
+            const _prevApplyM39 = applySpecSnapshot;
+            const _prevInitM39 = init;
+
+            captureSpecSnapshot = function() {
+                const snap = _prevCaptureM39();
+                snap.builderQuestions = PackState.questions;
+                return snap;
+            };
+
+            applySpecSnapshot = function(snap, preserveQuotes = false) {
+                _prevApplyM39(snap, preserveQuotes);
+                if (snap && Array.isArray(snap.builderQuestions)) {
+                    PackState.questions = snap.builderQuestions;
+                }
+                if (PackState.open) renderBuilderPackDocument();
+            };
+
+            init = function() {
+                _prevInitM39();
+                injectMobilePackButton();
+            };
+        })();        
 
         window.onload = () => {
             init();
